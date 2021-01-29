@@ -1,0 +1,463 @@
+From 5a32a8bec2bfca03ce6d4002e247ab041a88ff83 Mon Sep 17 00:00:00 2001
+From: peter <peter.shang@nodus.com>
+Date: Fri, 8 Jan 2021 15:15:59 +0800
+Subject: [PATCH 1/3] =?UTF-8?q?=E5=A4=9Azuhu?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+---
+ .../org/linlinjava/litemall/Application.java  |   3 +-
+ .../datasource/MultiTenantConstants.java      |   7 +
+ .../datasource/MultitenantConfiguration.java  | 121 +++++++++++++++++
+ .../datasource/MultitenantDataSource.java     |  29 ++++
+ .../core/config/datasource/TenantContext.java |  21 +++
+ .../config/datasource/TenantInterceptor.java  |  68 ++++++++++
+ .../src/main/resources/application-db.yml     | 125 +++++++++++++++++-
+ 7 files changed, 370 insertions(+), 4 deletions(-)
+ create mode 100644 litemall-core/src/main/java/org/linlinjava/litemall/core/config/datasource/MultiTenantConstants.java
+ create mode 100644 litemall-core/src/main/java/org/linlinjava/litemall/core/config/datasource/MultitenantConfiguration.java
+ create mode 100644 litemall-core/src/main/java/org/linlinjava/litemall/core/config/datasource/MultitenantDataSource.java
+ create mode 100644 litemall-core/src/main/java/org/linlinjava/litemall/core/config/datasource/TenantContext.java
+ create mode 100644 litemall-core/src/main/java/org/linlinjava/litemall/core/config/datasource/TenantInterceptor.java
+
+diff --git a/litemall-all/src/main/java/org/linlinjava/litemall/Application.java b/litemall-all/src/main/java/org/linlinjava/litemall/Application.java
+index fe5ef3fd..890e41f3 100644
+--- a/litemall-all/src/main/java/org/linlinjava/litemall/Application.java
++++ b/litemall-all/src/main/java/org/linlinjava/litemall/Application.java
+@@ -3,10 +3,11 @@ package org.linlinjava.litemall;
+ import org.mybatis.spring.annotation.MapperScan;
+ import org.springframework.boot.SpringApplication;
+ import org.springframework.boot.autoconfigure.SpringBootApplication;
++import org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration;
+ import org.springframework.scheduling.annotation.EnableScheduling;
+ import org.springframework.transaction.annotation.EnableTransactionManagement;
+ 
+-@SpringBootApplication(scanBasePackages = {"org.linlinjava.litemall"})
++@SpringBootApplication(scanBasePackages = {"org.linlinjava.litemall"}, exclude = DataSourceAutoConfiguration.class)
+ @MapperScan("org.linlinjava.litemall.db.dao")
+ @EnableTransactionManagement
+ @EnableScheduling
+diff --git a/litemall-core/src/main/java/org/linlinjava/litemall/core/config/datasource/MultiTenantConstants.java b/litemall-core/src/main/java/org/linlinjava/litemall/core/config/datasource/MultiTenantConstants.java
+new file mode 100644
+index 00000000..789e22c5
+--- /dev/null
++++ b/litemall-core/src/main/java/org/linlinjava/litemall/core/config/datasource/MultiTenantConstants.java
+@@ -0,0 +1,7 @@
++package org.linlinjava.litemall.core.config.datasource;
++
++public interface MultiTenantConstants {
++    String DEFAULT_TENANT_ID = "default";
++    String CURRENT_TENANT_IDENTIFIER = "CURRENT_TENANT_IDENTIFIER";
++    String TENANT_KEY = "tenant";
++}
+diff --git a/litemall-core/src/main/java/org/linlinjava/litemall/core/config/datasource/MultitenantConfiguration.java b/litemall-core/src/main/java/org/linlinjava/litemall/core/config/datasource/MultitenantConfiguration.java
+new file mode 100644
+index 00000000..d766878d
+--- /dev/null
++++ b/litemall-core/src/main/java/org/linlinjava/litemall/core/config/datasource/MultitenantConfiguration.java
+@@ -0,0 +1,121 @@
++package org.linlinjava.litemall.core.config.datasource;
++
++import com.alibaba.druid.spring.boot.autoconfigure.DruidDataSourceBuilder;
++import org.springframework.beans.factory.annotation.Autowired;
++import org.springframework.beans.factory.annotation.Qualifier;
++import org.springframework.boot.context.properties.ConfigurationProperties;
++import org.springframework.boot.jdbc.DataSourceBuilder;
++import org.springframework.context.annotation.Bean;
++import org.springframework.context.annotation.Configuration;
++import org.springframework.context.annotation.Primary;
++
++import javax.sql.DataSource;
++import java.util.HashMap;
++import java.util.Map;
++
++@Configuration
++public class MultitenantConfiguration {
++
++    @Bean(name = "primaryDataSource")
++    @ConfigurationProperties(prefix = "spring.datasource.primary")
++    public DataSource primaryDataSource(){
++        return DruidDataSourceBuilder.create().build();
++    }
++
++    @Bean(name = "tenant1")
++    @ConfigurationProperties(prefix = "spring.datasource.tenant1")
++    public DataSource tenant1(){
++        return DruidDataSourceBuilder.create().build();
++    }
++
++
++    @Bean(name = "tenant2")
++    @ConfigurationProperties(prefix = "spring.datasource.tenant2")
++    public DataSource tenant2(){
++        return DruidDataSourceBuilder.create().build();
++    }
++
++    @Bean(name = "tenant3")
++    @ConfigurationProperties(prefix = "spring.datasource.tenant3")
++    public DataSource tenant3(){
++        return DruidDataSourceBuilder.create().build();
++    }
++
++    @Bean(name = "tenant4")
++    @ConfigurationProperties(prefix = "spring.datasource.tenant4")
++    public DataSource tenant4(){
++        return DruidDataSourceBuilder.create().build();
++    }
++
++    @Bean(name = "tenant5")
++    @ConfigurationProperties(prefix = "spring.datasource.tenant5")
++    public DataSource tenant5(){
++        return DruidDataSourceBuilder.create().build();
++    }
++
++
++
++    @Autowired
++    @Qualifier("primaryDataSource")
++    DataSource primaryDataSource;
++
++    @Autowired
++    @Qualifier("tenant1")
++    DataSource tenant1DataSource;
++
++
++    @Autowired
++    @Qualifier("tenant2")
++    DataSource tenant2DataSource;
++
++    @Autowired
++    @Qualifier("tenant3")
++    DataSource tenant3DataSource;
++
++
++    @Autowired
++    @Qualifier("tenant4")
++    DataSource tenant4DataSource;
++
++    @Autowired
++    @Qualifier("tenant5")
++    DataSource tenant5DataSource;
++
++
++
++    @Bean
++    @Primary
++    public MultitenantDataSource multitenantDataSource() {
++        Map<Object,Object> resolvedDataSources = new HashMap<>();
++
++        resolvedDataSources.put(MultiTenantConstants.DEFAULT_TENANT_ID,primaryDataSource);
++
++        //db1
++//        DataSourceBuilder dataSourceBuilder = DataSourceBuilder.create()
++//                .url("jdbc:mysql://localhost:3306/litemall20201208?useUnicode=true&characterEncoding=UTF-8&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&verifyServerCertificate=false&useSSL=false")
++//                .username("root")
++//                .password("");
++        resolvedDataSources.put("tenant1",tenant1DataSource);
++        resolvedDataSources.put("tenant2",tenant2DataSource);
++        resolvedDataSources.put("tenant3",tenant3DataSource);
++        resolvedDataSources.put("tenant4",tenant4DataSource);
++        resolvedDataSources.put("tenant5",tenant5DataSource);
++
++        //db2
++//        DataSourceBuilder dataSourceBuilder2 = DataSourceBuilder.create()
++//                .url("jdbc:mysql://localhost:3306/litemall?useUnicode=true&characterEncoding=UTF-8&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&verifyServerCertificate=false&useSSL=false")
++//                .username("root")
++//                .password("");
++
++
++
++        MultitenantDataSource dataSource = new MultitenantDataSource();
++        dataSource.setDefaultTargetDataSource(resolvedDataSources.get(MultiTenantConstants.DEFAULT_TENANT_ID));
++        dataSource.setTargetDataSources(resolvedDataSources);
++
++
++        dataSource.afterPropertiesSet();
++
++        return dataSource;
++    }
++}
+diff --git a/litemall-core/src/main/java/org/linlinjava/litemall/core/config/datasource/MultitenantDataSource.java b/litemall-core/src/main/java/org/linlinjava/litemall/core/config/datasource/MultitenantDataSource.java
+new file mode 100644
+index 00000000..c6f042c3
+--- /dev/null
++++ b/litemall-core/src/main/java/org/linlinjava/litemall/core/config/datasource/MultitenantDataSource.java
+@@ -0,0 +1,29 @@
++package org.linlinjava.litemall.core.config.datasource;
++
++import org.springframework.jdbc.datasource.lookup.AbstractRoutingDataSource;
++import org.springframework.stereotype.Component;
++
++import javax.sql.DataSource;
++import java.util.Map;
++import java.util.concurrent.ConcurrentHashMap;
++
++@Component
++public class MultitenantDataSource extends AbstractRoutingDataSource {
++    @Override
++    protected Object determineCurrentLookupKey() {
++        return TenantContext.getCurrentTenant();
++    }
++
++    private ConcurrentHashMap<String, DataSource> backupTargetDataSources = new ConcurrentHashMap<>();
++
++    public void addDataSourceToTargetDataSource(String key ,DataSource ds){
++        this.backupTargetDataSources.put(key, ds);
++        this.setTargetDataSource(this.backupTargetDataSources);
++    }
++
++
++    public void setTargetDataSource(Map targetDataSource){
++        super.setTargetDataSources(targetDataSource);
++        this.afterPropertiesSet();
++    }
++}
+diff --git a/litemall-core/src/main/java/org/linlinjava/litemall/core/config/datasource/TenantContext.java b/litemall-core/src/main/java/org/linlinjava/litemall/core/config/datasource/TenantContext.java
+new file mode 100644
+index 00000000..02c582b4
+--- /dev/null
++++ b/litemall-core/src/main/java/org/linlinjava/litemall/core/config/datasource/TenantContext.java
+@@ -0,0 +1,21 @@
++package org.linlinjava.litemall.core.config.datasource;
++
++import org.slf4j.Logger;
++import org.slf4j.LoggerFactory;
++
++public class TenantContext {
++    private static Logger logger = LoggerFactory.getLogger(TenantContext.class.getName());
++    private static ThreadLocal<String> currentTenant = new InheritableThreadLocal<>();
++
++    public static String getCurrentTenant() {
++        return currentTenant.get();
++    }
++
++    public static void setCurrentTenant(String tenant) {
++        currentTenant.set(tenant);
++    }
++
++    public static void clear() {
++        currentTenant.set(null);
++    }
++}
+\ No newline at end of file
+diff --git a/litemall-core/src/main/java/org/linlinjava/litemall/core/config/datasource/TenantInterceptor.java b/litemall-core/src/main/java/org/linlinjava/litemall/core/config/datasource/TenantInterceptor.java
+new file mode 100644
+index 00000000..fa588269
+--- /dev/null
++++ b/litemall-core/src/main/java/org/linlinjava/litemall/core/config/datasource/TenantInterceptor.java
+@@ -0,0 +1,68 @@
++package org.linlinjava.litemall.core.config.datasource;
++
++import org.springframework.beans.factory.annotation.Value;
++import org.springframework.stereotype.Component;
++import org.springframework.web.servlet.ModelAndView;
++import org.springframework.web.servlet.handler.HandlerInterceptorAdapter;
++
++import javax.servlet.*;
++import javax.servlet.http.HttpServletRequest;
++import javax.servlet.http.HttpServletResponse;
++import java.io.IOException;
++
++@Component
++
++public class TenantInterceptor  implements Filter {
++
++    @Override
++    public void init(FilterConfig filterConfig) throws ServletException {}
++
++    @Override
++    public void doFilter(ServletRequest servletRequest, ServletResponse servletResponse, FilterChain filterChain) throws IOException, ServletException {
++        HttpServletRequest req = (HttpServletRequest) servletRequest;
++        String tenantId = req.getHeader(MultiTenantConstants.TENANT_KEY);
++        if (tenantId == null) {
++            tenantId = MultiTenantConstants.DEFAULT_TENANT_ID;
++        }
++
++        TenantContext.setCurrentTenant(tenantId);
++        filterChain.doFilter(servletRequest, servletResponse);
++    }
++
++    @Override
++    public void destroy() {}
++
++    /*
++
++//    @Value("${jwt.header}")
++//    private String tokenHeader;
++
++    @Override
++    public boolean preHandle(HttpServletRequest request, HttpServletResponse response, Object handler)
++            throws Exception {
++
++        String tenantId = request.getHeader(MultiTenantConstants.TENANT_KEY);
++        if (tenantId == null) {
++            tenantId = MultiTenantConstants.DEFAULT_TENANT_ID;
++        }
++
++//        String authToken = request.getHeader(this.tokenHeader);
++        // authToken.startsWith("Bearer ")
++        // String authToken = header.substring(7);
++//        String tenantId = "tenantId from authToken";
++        TenantContext.setCurrentTenant(tenantId);
++
++        return true;
++    }
++
++    @Override
++    public void postHandle(
++            HttpServletRequest request, HttpServletResponse response, Object handler, ModelAndView modelAndView)
++            throws Exception {
++        TenantContext.clear();
++    }
++
++    */
++}
++
++
+diff --git a/litemall-db/src/main/resources/application-db.yml b/litemall-db/src/main/resources/application-db.yml
+index c102c306..1798d6f8 100644
+--- a/litemall-db/src/main/resources/application-db.yml
++++ b/litemall-db/src/main/resources/application-db.yml
+@@ -6,11 +6,128 @@ pagehelper:
+ 
+ spring:
+   datasource:
+-    druid:
++    tenant1:
++      url:  jdbc:mysql://localhost:3306/litemall20201208?useUnicode=true&characterEncoding=UTF-8&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&verifyServerCertificate=false&useSSL=false
++      driver-class-name:  com.mysql.cj.jdbc.Driver
++      username:  root
++      password:
++      initial-size: 5
++      max-active: 50
++      min-idle: 10
++      max-wait: 60000
++      pool-prepared-statements: true
++      max-pool-prepared-statement-per-connection-size: 20
++      validation-query: SELECT 1 FROM DUAL
++      test-on-borrow: false
++      test-on-return: false
++      test-while-idle: true
++      time-between-eviction-runs-millis: 60000
++      webStatFilter:
++        enabled: true
++      statViewServlet:
++        enabled: false
++      filter:
++        stat:
++          enabled: false
++    tenant2:
++      url:  jdbc:mysql://localhost:3306/litemall?useUnicode=true&characterEncoding=UTF-8&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&verifyServerCertificate=false&useSSL=false
++      driver-class-name:  com.mysql.cj.jdbc.Driver
++      username:  root
++      password:
++      initial-size: 5
++      max-active: 50
++      min-idle: 10
++      max-wait: 60000
++      pool-prepared-statements: true
++      max-pool-prepared-statement-per-connection-size: 20
++      validation-query: SELECT 1 FROM DUAL
++      test-on-borrow: false
++      test-on-return: false
++      test-while-idle: true
++      time-between-eviction-runs-millis: 60000
++      webStatFilter:
++        enabled: true
++      statViewServlet:
++        enabled: false
++      filter:
++        stat:
++          enabled: false
++    tenant3:
++      url:  jdbc:mysql://localhost:3306/litemall?useUnicode=true&characterEncoding=UTF-8&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&verifyServerCertificate=false&useSSL=false
++      driver-class-name:  com.mysql.cj.jdbc.Driver
++      username:  root
++      password:
++      initial-size: 5
++      max-active: 50
++      min-idle: 10
++      max-wait: 60000
++      pool-prepared-statements: true
++      max-pool-prepared-statement-per-connection-size: 20
++      validation-query: SELECT 1 FROM DUAL
++      test-on-borrow: false
++      test-on-return: false
++      test-while-idle: true
++      time-between-eviction-runs-millis: 60000
++      webStatFilter:
++        enabled: true
++      statViewServlet:
++        enabled: false
++      filter:
++        stat:
++          enabled: false
++    tenant4:
++      url:  jdbc:mysql://localhost:3306/litemall?useUnicode=true&characterEncoding=UTF-8&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&verifyServerCertificate=false&useSSL=false
++      driver-class-name:  com.mysql.cj.jdbc.Driver
++      username:  root
++      password:
++      initial-size: 5
++      max-active: 50
++      min-idle: 10
++      max-wait: 60000
++      pool-prepared-statements: true
++      max-pool-prepared-statement-per-connection-size: 20
++      validation-query: SELECT 1 FROM DUAL
++      test-on-borrow: false
++      test-on-return: false
++      test-while-idle: true
++      time-between-eviction-runs-millis: 60000
++      webStatFilter:
++        enabled: true
++      statViewServlet:
++        enabled: false
++      filter:
++        stat:
++          enabled: false
++    tenant5:
+       url:  jdbc:mysql://localhost:3306/litemall?useUnicode=true&characterEncoding=UTF-8&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&verifyServerCertificate=false&useSSL=false
+       driver-class-name:  com.mysql.cj.jdbc.Driver
+-      username:  litemall
+-      password:  litemall123456
++      username:  root
++      password:
++      initial-size: 5
++      max-active: 50
++      min-idle: 10
++      max-wait: 60000
++      pool-prepared-statements: true
++      max-pool-prepared-statement-per-connection-size: 20
++      validation-query: SELECT 1 FROM DUAL
++      test-on-borrow: false
++      test-on-return: false
++      test-while-idle: true
++      time-between-eviction-runs-millis: 60000
++      webStatFilter:
++        enabled: true
++      statViewServlet:
++        enabled: false
++      filter:
++        stat:
++          enabled: false
++
++#    druid:
++    primary:
++      url:  jdbc:mysql://localhost:3306/litemall20201208?useUnicode=true&characterEncoding=UTF-8&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&verifyServerCertificate=false&useSSL=false
++      driver-class-name:  com.mysql.cj.jdbc.Driver
++      username:  root
++      password:
+       initial-size:  10
+       max-active:  50
+       min-idle:  10
+@@ -29,3 +146,5 @@ spring:
+       filter:
+         stat:
+           enabled: false
++  main:
++    allow-bean-definition-overriding: true
+\ No newline at end of file
+-- 
+2.20.1.windows.1
+
