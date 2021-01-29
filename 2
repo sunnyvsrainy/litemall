@@ -1,0 +1,2883 @@
+From 51814f1f795c96528cddf727957868b3b5137106 Mon Sep 17 00:00:00 2001
+From: peter <peter.shang@nodus.com>
+Date: Fri, 8 Jan 2021 15:32:57 +0800
+Subject: [PATCH 2/3] =?UTF-8?q?DUOZUHU=20=E5=AE=8C=E5=96=84?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+---
+ litemall-admin-api/pom.xml                    |   5 +
+ .../admin/web/AdminAdminController.java       |  72 ++
+ .../admin/web/AdminAuthController.java        |  13 +-
+ litemall-admin/.env.development               |   3 +-
+ litemall-admin/package.json                   |   1 +
+ litemall-admin/src/store/modules/user.js      |   3 +-
+ litemall-admin/src/utils/auth.js              |   9 +
+ litemall-admin/src/utils/request.js           |   3 +-
+ litemall-admin/vue.config.js                  |  12 +
+ .../litemall/core/config/MiscProperties.java  |  21 +
+ .../src/main/resources/application-core.yml   |   4 +
+ .../mybatis-generator/generatorConfig.xml     |  11 +-
+ .../db/dao/LitemallStakeholdersMapper.java    | 128 +++
+ .../litemall/db/domain/LitemallAdmin.java     | 115 ++-
+ .../db/domain/LitemallAdminExample.java       | 398 ++++++++
+ .../db/domain/LitemallStakeholders.java       | 334 +++++++
+ .../domain/LitemallStakeholdersExample.java   | 865 ++++++++++++++++++
+ .../db/service/LitemallAdminService.java      |   4 +-
+ .../litemall/db/dao/LitemallAdminMapper.xml   |  57 +-
+ .../db/dao/LitemallStakeholdersMapper.xml     | 326 +++++++
+ .../litemall/wx/web/WxIndexController.java    |   6 +
+ study.txt                                     |  58 ++
+ 22 files changed, 2430 insertions(+), 18 deletions(-)
+ create mode 100644 litemall-core/src/main/java/org/linlinjava/litemall/core/config/MiscProperties.java
+ create mode 100644 litemall-db/src/main/java/org/linlinjava/litemall/db/dao/LitemallStakeholdersMapper.java
+ create mode 100644 litemall-db/src/main/java/org/linlinjava/litemall/db/domain/LitemallStakeholders.java
+ create mode 100644 litemall-db/src/main/java/org/linlinjava/litemall/db/domain/LitemallStakeholdersExample.java
+ create mode 100644 litemall-db/src/main/resources/org/linlinjava/litemall/db/dao/LitemallStakeholdersMapper.xml
+ create mode 100644 study.txt
+
+diff --git a/litemall-admin-api/pom.xml b/litemall-admin-api/pom.xml
+index 5e7f2757..587420be 100644
+--- a/litemall-admin-api/pom.xml
++++ b/litemall-admin-api/pom.xml
+@@ -49,6 +49,11 @@
+             <artifactId>swagger-bootstrap-ui</artifactId>
+             <version>1.9.6</version>
+         </dependency>
++        <dependency>
++            <groupId>com.squareup.okhttp3</groupId>
++            <artifactId>okhttp</artifactId>
++            <version>4.9.0</version>
++        </dependency>
+     </dependencies>
+ 
+     <build>
+diff --git a/litemall-admin-api/src/main/java/org/linlinjava/litemall/admin/web/AdminAdminController.java b/litemall-admin-api/src/main/java/org/linlinjava/litemall/admin/web/AdminAdminController.java
+index a8bc1b2b..f58dd524 100644
+--- a/litemall-admin-api/src/main/java/org/linlinjava/litemall/admin/web/AdminAdminController.java
++++ b/litemall-admin-api/src/main/java/org/linlinjava/litemall/admin/web/AdminAdminController.java
+@@ -1,5 +1,11 @@
+ package org.linlinjava.litemall.admin.web;
+ 
++import com.fasterxml.jackson.core.JsonProcessingException;
++import com.fasterxml.jackson.databind.ObjectMapper;
++import okhttp3.MediaType;
++import okhttp3.OkHttpClient;
++import okhttp3.Request;
++import okhttp3.Response;
+ import org.apache.commons.logging.Log;
+ import org.apache.commons.logging.LogFactory;
+ import org.apache.shiro.SecurityUtils;
+@@ -7,6 +13,9 @@ import org.apache.shiro.authz.annotation.RequiresPermissions;
+ import org.apache.shiro.subject.Subject;
+ import org.linlinjava.litemall.admin.annotation.RequiresPermissionsDesc;
+ import org.linlinjava.litemall.admin.service.LogHelper;
++import org.linlinjava.litemall.core.config.MiscProperties;
++import org.linlinjava.litemall.core.config.datasource.MultiTenantConstants;
++import org.linlinjava.litemall.core.config.datasource.TenantContext;
+ import org.linlinjava.litemall.core.util.RegexUtil;
+ import org.linlinjava.litemall.core.util.ResponseUtil;
+ import org.linlinjava.litemall.core.util.bcrypt.BCryptPasswordEncoder;
+@@ -20,6 +29,7 @@ import org.springframework.validation.annotation.Validated;
+ import org.springframework.web.bind.annotation.*;
+ 
+ import javax.validation.constraints.NotNull;
++import java.io.IOException;
+ import java.util.List;
+ 
+ import static org.linlinjava.litemall.admin.util.AdminResponseCode.*;
+@@ -71,6 +81,67 @@ public class AdminAdminController {
+             return error;
+         }
+ 
++        String username = admin.getUsername(); //电话号码，全局唯一
++        List<LitemallAdmin> adminList = adminService.findAdmin(username);
++        if (adminList.size() > 0) {
++            return ResponseUtil.fail(ADMIN_NAME_EXIST, "管理员已经存在");
++        }
++
++        String rawPassword = admin.getPassword();
++        BCryptPasswordEncoder encoder = new BCryptPasswordEncoder();
++        String encodedPassword = encoder.encode(rawPassword);
++        admin.setPassword(encodedPassword);
++        int userId = adminService.add(admin);
++        logHelper.logAuthSucceed("添加管理员", username);
++
++        String tenant = TenantContext.getCurrentTenant();
++        admin.setTenantId(tenant);
++        admin.setMobile(username);
++        admin.setUserIdInTenant(userId);
++
++        //同步调用在主库也创建一笔。
++        post2Master("/masterdb/create", admin);
++        return ResponseUtil.ok(admin);
++    }
++
++
++    @Autowired
++    MiscProperties miscProperties;
++
++    private void post2Master(String url, Object rawObject) {
++
++        url = miscProperties.getItselfUrl() + url;
++        OkHttpClient client = new OkHttpClient();
++        ObjectMapper objectMapper = new ObjectMapper();
++        String json = null;
++        try {
++            json = objectMapper.writeValueAsString(rawObject);
++            okhttp3.RequestBody body = okhttp3.RequestBody.create(MediaType.get("application/json; charset=utf-8"), json);
++            Request request = new Request.Builder()
++                    .url(url)
++                    .addHeader(MultiTenantConstants.TENANT_KEY, MultiTenantConstants.DEFAULT_TENANT_ID)
++                    .post(body)
++                    .build();
++            Response response = client.newCall(request).execute() ;
++        } catch (JsonProcessingException e) {
++            e.printStackTrace();
++        } catch (IOException e) {
++            e.printStackTrace();
++        }
++
++
++//           response.body().string();
++
++    }
++
++    @PostMapping("/masterdb/create")
++    public Object createOnMasterDb(@RequestBody LitemallAdmin admin) {
++        //TODO 制只能从通过http从本地调用
++        Object error = validate(admin);
++        if (error != null) {
++            return error;
++        }
++
+         String username = admin.getUsername();
+         List<LitemallAdmin> adminList = adminService.findAdmin(username);
+         if (adminList.size() > 0) {
+@@ -86,6 +157,7 @@ public class AdminAdminController {
+         return ResponseUtil.ok(admin);
+     }
+ 
++
+     @RequiresPermissions("admin:admin:read")
+     @RequiresPermissionsDesc(menu = {"系统管理", "管理员管理"}, button = "详情")
+     @GetMapping("/read")
+diff --git a/litemall-admin-api/src/main/java/org/linlinjava/litemall/admin/web/AdminAuthController.java b/litemall-admin-api/src/main/java/org/linlinjava/litemall/admin/web/AdminAuthController.java
+index 506d61a4..eed0ddfe 100644
+--- a/litemall-admin-api/src/main/java/org/linlinjava/litemall/admin/web/AdminAuthController.java
++++ b/litemall-admin-api/src/main/java/org/linlinjava/litemall/admin/web/AdminAuthController.java
+@@ -25,7 +25,8 @@ import org.springframework.context.ApplicationContext;
+ import org.springframework.util.StringUtils;
+ import org.springframework.validation.annotation.Validated;
+ import org.springframework.web.bind.annotation.*;
+-import sun.misc.BASE64Encoder;
++//import sun.misc.BASE64Encoder;
++import org.apache.commons.codec.binary.Base64;
+ 
+ import javax.imageio.ImageIO;
+ import javax.servlet.http.HttpServletRequest;
+@@ -75,8 +76,10 @@ public class AdminAuthController {
+         try {
+             ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
+             ImageIO.write(image, "jpeg", outputStream);
+-            BASE64Encoder encoder = new BASE64Encoder();
+-            String base64 = encoder.encode(outputStream.toByteArray());
++//            BASE64Encoder encoder = new BASE64Encoder();
++//            return Base64.encodeBase64String(encrypted);
++//            String base64 = encoder.encode(outputStream.toByteArray());
++            String base64 = Base64.encodeBase64String(outputStream.toByteArray());
+             String captchaBase64 = "data:image/jpeg;base64," + base64.replaceAll("\r\n", "");
+             return captchaBase64;
+         } catch (IOException e) {
+@@ -133,10 +136,14 @@ public class AdminAuthController {
+         Map<String, Object> adminInfo = new HashMap<String, Object>();
+         adminInfo.put("nickName", admin.getUsername());
+         adminInfo.put("avatar", admin.getAvatar());
++        adminInfo.put("tenantId", admin.getTenantId());
++        //替换成租户库里userid
++        admin.setId(admin.getUserIdInTenant());
+ 
+         Map<Object, Object> result = new HashMap<Object, Object>();
+         result.put("token", currentUser.getSession().getId());
+         result.put("adminInfo", adminInfo);
++        result.put("tenantId", admin.getTenantId());
+         return ResponseUtil.ok(result);
+     }
+ 
+diff --git a/litemall-admin/.env.development b/litemall-admin/.env.development
+index 0ddbf114..f0ddae20 100644
+--- a/litemall-admin/.env.development
++++ b/litemall-admin/.env.development
+@@ -2,7 +2,8 @@
+ ENV = 'development'
+ 
+ # base api
+-VUE_APP_BASE_API = 'http://localhost:8080/admin'
++#VUE_APP_BASE_API = 'http://localhost:8080/admin'
++VUE_APP_BASE_API = 'admin'
+ 
+ # vue-cli uses the VUE_CLI_BABEL_TRANSPILE_MODULES environment variable,
+ # to control whether the babel-plugin-dynamic-import-node plugin is enabled.
+diff --git a/litemall-admin/package.json b/litemall-admin/package.json
+index 870fa83f..4dac052b 100644
+--- a/litemall-admin/package.json
++++ b/litemall-admin/package.json
+@@ -64,6 +64,7 @@
+     "vuex": "3.1.0",
+     "xlsx": "0.14.1"
+   },
++  "proxy" : "http://localhost:8080/admin",
+   "devDependencies": {
+     "@babel/core": "7.0.0",
+     "@babel/register": "7.0.0",
+diff --git a/litemall-admin/src/store/modules/user.js b/litemall-admin/src/store/modules/user.js
+index 13cf1412..28d2ffd5 100644
+--- a/litemall-admin/src/store/modules/user.js
++++ b/litemall-admin/src/store/modules/user.js
+@@ -1,5 +1,5 @@
+ import { loginByUsername, logout, getUserInfo } from '@/api/login'
+-import { getToken, setToken, removeToken } from '@/utils/auth'
++import { getToken, setToken, removeToken, setTenant } from '@/utils/auth'
+ import router, { resetRouter } from '@/router'
+ 
+ const user = {
+@@ -39,6 +39,7 @@ const user = {
+           const token = response.data.data.token
+           commit('SET_TOKEN', token)
+           setToken(token)
++          setTenant(response.data.data.tenantId)
+           resolve()
+         }).catch(error => {
+           reject(error)
+diff --git a/litemall-admin/src/utils/auth.js b/litemall-admin/src/utils/auth.js
+index c14f02d8..a2b872a6 100644
+--- a/litemall-admin/src/utils/auth.js
++++ b/litemall-admin/src/utils/auth.js
+@@ -1,6 +1,7 @@
+ import Cookies from 'js-cookie'
+ 
+ const TokenKey = 'X-Litemall-Admin-Token'
++const TenantId = 'tenantId'
+ 
+ export function getToken() {
+   return Cookies.get(TokenKey)
+@@ -13,3 +14,11 @@ export function setToken(token) {
+ export function removeToken() {
+   return Cookies.remove(TokenKey)
+ }
++
++export function setTenant(tenant) {
++  return Cookies.set(TenantId, tenant)
++}
++
++export function getTenant() {
++  return Cookies.get(TenantId)
++}
+diff --git a/litemall-admin/src/utils/request.js b/litemall-admin/src/utils/request.js
+index 147329f6..41940eb2 100644
+--- a/litemall-admin/src/utils/request.js
++++ b/litemall-admin/src/utils/request.js
+@@ -1,7 +1,7 @@
+ import axios from 'axios'
+ import { Message, MessageBox } from 'element-ui'
+ import store from '@/store'
+-import { getToken } from '@/utils/auth'
++import { getToken, getTenant } from '@/utils/auth'
+ 
+ axios.defaults.withCredentials = true
+ 
+@@ -18,6 +18,7 @@ service.interceptors.request.use(
+     if (store.getters.token) {
+       // 让每个请求携带token-- ['X-Litemall-Admin-Token']为自定义key 请根据实际情况自行修改
+       config.headers['X-Litemall-Admin-Token'] = getToken()
++      config.headers['tenant'] = getTenant()
+     }
+     return config
+   },
+diff --git a/litemall-admin/vue.config.js b/litemall-admin/vue.config.js
+index 55a46253..d4e4885e 100644
+--- a/litemall-admin/vue.config.js
++++ b/litemall-admin/vue.config.js
+@@ -31,6 +31,18 @@ module.exports = {
+   devServer: {
+     port: port,
+     open: true,
++	proxy:{
++	'/admin':{
++		target: 'http://localhost:8080',//代理地址，这里设置的地址会代替axios中设置的baseURL
++		changeOrigin: true,// 如果接口跨域，需要进行这个参数配置
++		//ws: true, // proxy websockets
++		//pathRewrite方法重写url
++		pathRewrite: {
++			'^/admin': '/admin' 
++			//pathRewrite: {'^/api': '/'} 重写之后url为 http://192.168.1.16:8085/xxxx
++			//pathRewrite: {'^/api': '/api'} 重写之后url为 http://192.168.1.16:8085/api/xxxx
++	   }
++    }},
+     overlay: {
+       warnings: false,
+       errors: true
+diff --git a/litemall-core/src/main/java/org/linlinjava/litemall/core/config/MiscProperties.java b/litemall-core/src/main/java/org/linlinjava/litemall/core/config/MiscProperties.java
+new file mode 100644
+index 00000000..2af3788f
+--- /dev/null
++++ b/litemall-core/src/main/java/org/linlinjava/litemall/core/config/MiscProperties.java
+@@ -0,0 +1,21 @@
++package org.linlinjava.litemall.core.config;
++
++import org.linlinjava.litemall.core.express.config.ExpressProperties;
++import org.springframework.boot.context.properties.ConfigurationProperties;
++import org.springframework.boot.context.properties.EnableConfigurationProperties;
++import org.springframework.context.annotation.Configuration;
++
++@Configuration
++//@EnableConfigurationProperties(MiscProperties.class)
++@ConfigurationProperties(prefix = "peter.misc")
++public class MiscProperties {
++    private String itselfUrl;
++
++    public String getItselfUrl() {
++        return itselfUrl;
++    }
++
++    public void setItselfUrl(String itselfUrl) {
++        this.itselfUrl = itselfUrl;
++    }
++}
+diff --git a/litemall-core/src/main/resources/application-core.yml b/litemall-core/src/main/resources/application-core.yml
+index d665219c..ecdbf8d2 100644
+--- a/litemall-core/src/main/resources/application-core.yml
++++ b/litemall-core/src/main/resources/application-core.yml
+@@ -1,3 +1,7 @@
++peter:
++  misc:
++    #该应用程序部署的URL
++    itselfUrl: http://localhost:8080
+ litemall:
+   # 开发者应该设置成自己的wx相关信息
+   wx:
+diff --git a/litemall-db/mybatis-generator/generatorConfig.xml b/litemall-db/mybatis-generator/generatorConfig.xml
+index 3d77531d..f6663636 100644
+--- a/litemall-db/mybatis-generator/generatorConfig.xml
++++ b/litemall-db/mybatis-generator/generatorConfig.xml
+@@ -43,9 +43,9 @@
+ 
+         <!--数据库连接信息-->
+         <jdbcConnection driverClass="com.mysql.cj.jdbc.Driver"
+-                        connectionURL="jdbc:mysql://127.0.0.1:3306/litemall?useUnicode=true&amp;characterEncoding=UTF-8&amp;serverTimezone=UTC&amp;verifyServerCertificate=false&amp;useSSL=false&amp;nullCatalogMeansCurrent=true"
+-                        userId="litemall"
+-                        password="litemall123456"/>
++                        connectionURL="jdbc:mysql://127.0.0.1:3306/litemall20201208?useUnicode=true&amp;characterEncoding=UTF-8&amp;serverTimezone=UTC&amp;verifyServerCertificate=false&amp;useSSL=false&amp;nullCatalogMeansCurrent=true"
++                        userId="root"
++                        password=""/>
+ 
+         <javaTypeResolver>
+             <property name="useJSR310Types" value="true"/>
+@@ -184,5 +184,10 @@
+             <columnOverride column="pictures" javaType="java.lang.String[]"
+                             typeHandler="org.linlinjava.litemall.db.mybatis.JsonStringArrayTypeHandler"/>
+         </table>
++
++        <table tableName="litemall_stakeholders">
++            <generatedKey column="id" sqlStatement="MySql" identity="true"/>
++        </table>
++
+     </context>
+ </generatorConfiguration>
+\ No newline at end of file
+diff --git a/litemall-db/src/main/java/org/linlinjava/litemall/db/dao/LitemallStakeholdersMapper.java b/litemall-db/src/main/java/org/linlinjava/litemall/db/dao/LitemallStakeholdersMapper.java
+new file mode 100644
+index 00000000..39c044a9
+--- /dev/null
++++ b/litemall-db/src/main/java/org/linlinjava/litemall/db/dao/LitemallStakeholdersMapper.java
+@@ -0,0 +1,128 @@
++package org.linlinjava.litemall.db.dao;
++
++import java.util.List;
++import org.apache.ibatis.annotations.Param;
++import org.linlinjava.litemall.db.domain.LitemallStakeholders;
++import org.linlinjava.litemall.db.domain.LitemallStakeholdersExample;
++
++public interface LitemallStakeholdersMapper {
++    /**
++     * This method was generated by MyBatis Generator.
++     * This method corresponds to the database table litemall_stakeholders
++     *
++     * @mbg.generated
++     */
++    long countByExample(LitemallStakeholdersExample example);
++
++    /**
++     * This method was generated by MyBatis Generator.
++     * This method corresponds to the database table litemall_stakeholders
++     *
++     * @mbg.generated
++     */
++    int deleteByExample(LitemallStakeholdersExample example);
++
++    /**
++     * This method was generated by MyBatis Generator.
++     * This method corresponds to the database table litemall_stakeholders
++     *
++     * @mbg.generated
++     */
++    int deleteByPrimaryKey(Integer id);
++
++    /**
++     * This method was generated by MyBatis Generator.
++     * This method corresponds to the database table litemall_stakeholders
++     *
++     * @mbg.generated
++     */
++    int insert(LitemallStakeholders record);
++
++    /**
++     * This method was generated by MyBatis Generator.
++     * This method corresponds to the database table litemall_stakeholders
++     *
++     * @mbg.generated
++     */
++    int insertSelective(LitemallStakeholders record);
++
++    /**
++     * This method was generated by MyBatis Generator.
++     * This method corresponds to the database table litemall_stakeholders
++     *
++     * @mbg.generated
++     */
++    LitemallStakeholders selectOneByExample(LitemallStakeholdersExample example);
++
++    /**
++     * This method was generated by MyBatis Generator.
++     * This method corresponds to the database table litemall_stakeholders
++     *
++     * @mbg.generated
++     */
++    LitemallStakeholders selectOneByExampleSelective(@Param("example") LitemallStakeholdersExample example, @Param("selective") LitemallStakeholders.Column ... selective);
++
++    /**
++     * This method was generated by MyBatis Generator.
++     * This method corresponds to the database table litemall_stakeholders
++     *
++     * @mbg.generated
++     */
++    List<LitemallStakeholders> selectByExampleSelective(@Param("example") LitemallStakeholdersExample example, @Param("selective") LitemallStakeholders.Column ... selective);
++
++    /**
++     * This method was generated by MyBatis Generator.
++     * This method corresponds to the database table litemall_stakeholders
++     *
++     * @mbg.generated
++     */
++    List<LitemallStakeholders> selectByExample(LitemallStakeholdersExample example);
++
++    /**
++     * This method was generated by MyBatis Generator.
++     * This method corresponds to the database table litemall_stakeholders
++     *
++     * @mbg.generated
++     */
++    LitemallStakeholders selectByPrimaryKeySelective(@Param("id") Integer id, @Param("selective") LitemallStakeholders.Column ... selective);
++
++    /**
++     * This method was generated by MyBatis Generator.
++     * This method corresponds to the database table litemall_stakeholders
++     *
++     * @mbg.generated
++     */
++    LitemallStakeholders selectByPrimaryKey(Integer id);
++
++    /**
++     * This method was generated by MyBatis Generator.
++     * This method corresponds to the database table litemall_stakeholders
++     *
++     * @mbg.generated
++     */
++    int updateByExampleSelective(@Param("record") LitemallStakeholders record, @Param("example") LitemallStakeholdersExample example);
++
++    /**
++     * This method was generated by MyBatis Generator.
++     * This method corresponds to the database table litemall_stakeholders
++     *
++     * @mbg.generated
++     */
++    int updateByExample(@Param("record") LitemallStakeholders record, @Param("example") LitemallStakeholdersExample example);
++
++    /**
++     * This method was generated by MyBatis Generator.
++     * This method corresponds to the database table litemall_stakeholders
++     *
++     * @mbg.generated
++     */
++    int updateByPrimaryKeySelective(LitemallStakeholders record);
++
++    /**
++     * This method was generated by MyBatis Generator.
++     * This method corresponds to the database table litemall_stakeholders
++     *
++     * @mbg.generated
++     */
++    int updateByPrimaryKey(LitemallStakeholders record);
++}
+\ No newline at end of file
+diff --git a/litemall-db/src/main/java/org/linlinjava/litemall/db/domain/LitemallAdmin.java b/litemall-db/src/main/java/org/linlinjava/litemall/db/domain/LitemallAdmin.java
+index 6b05350c..cf35e7b9 100644
+--- a/litemall-db/src/main/java/org/linlinjava/litemall/db/domain/LitemallAdmin.java
++++ b/litemall-db/src/main/java/org/linlinjava/litemall/db/domain/LitemallAdmin.java
+@@ -111,6 +111,33 @@ public class LitemallAdmin {
+      */
+     private Integer[] roleIds;
+ 
++    /**
++     *
++     * This field was generated by MyBatis Generator.
++     * This field corresponds to the database column litemall_admin.tenant_id
++     *
++     * @mbg.generated
++     */
++    private String tenantId;
++
++    /**
++     *
++     * This field was generated by MyBatis Generator.
++     * This field corresponds to the database column litemall_admin.user_id_in_tenant
++     *
++     * @mbg.generated
++     */
++    private Integer userIdInTenant;
++
++    /**
++     *
++     * This field was generated by MyBatis Generator.
++     * This field corresponds to the database column litemall_admin.mobile
++     *
++     * @mbg.generated
++     */
++    private String mobile;
++
+     /**
+      * This method was generated by MyBatis Generator.
+      * This method returns the value of the database column litemall_admin.id
+@@ -361,6 +388,78 @@ public class LitemallAdmin {
+         this.roleIds = roleIds;
+     }
+ 
++    /**
++     * This method was generated by MyBatis Generator.
++     * This method returns the value of the database column litemall_admin.tenant_id
++     *
++     * @return the value of litemall_admin.tenant_id
++     *
++     * @mbg.generated
++     */
++    public String getTenantId() {
++        return tenantId;
++    }
++
++    /**
++     * This method was generated by MyBatis Generator.
++     * This method sets the value of the database column litemall_admin.tenant_id
++     *
++     * @param tenantId the value for litemall_admin.tenant_id
++     *
++     * @mbg.generated
++     */
++    public void setTenantId(String tenantId) {
++        this.tenantId = tenantId;
++    }
++
++    /**
++     * This method was generated by MyBatis Generator.
++     * This method returns the value of the database column litemall_admin.user_id_in_tenant
++     *
++     * @return the value of litemall_admin.user_id_in_tenant
++     *
++     * @mbg.generated
++     */
++    public Integer getUserIdInTenant() {
++        return userIdInTenant;
++    }
++
++    /**
++     * This method was generated by MyBatis Generator.
++     * This method sets the value of the database column litemall_admin.user_id_in_tenant
++     *
++     * @param userIdInTenant the value for litemall_admin.user_id_in_tenant
++     *
++     * @mbg.generated
++     */
++    public void setUserIdInTenant(Integer userIdInTenant) {
++        this.userIdInTenant = userIdInTenant;
++    }
++
++    /**
++     * This method was generated by MyBatis Generator.
++     * This method returns the value of the database column litemall_admin.mobile
++     *
++     * @return the value of litemall_admin.mobile
++     *
++     * @mbg.generated
++     */
++    public String getMobile() {
++        return mobile;
++    }
++
++    /**
++     * This method was generated by MyBatis Generator.
++     * This method sets the value of the database column litemall_admin.mobile
++     *
++     * @param mobile the value for litemall_admin.mobile
++     *
++     * @mbg.generated
++     */
++    public void setMobile(String mobile) {
++        this.mobile = mobile;
++    }
++
+     /**
+      * This method was generated by MyBatis Generator.
+      * This method corresponds to the database table litemall_admin
+@@ -385,6 +484,9 @@ public class LitemallAdmin {
+         sb.append(", updateTime=").append(updateTime);
+         sb.append(", deleted=").append(deleted);
+         sb.append(", roleIds=").append(roleIds);
++        sb.append(", tenantId=").append(tenantId);
++        sb.append(", userIdInTenant=").append(userIdInTenant);
++        sb.append(", mobile=").append(mobile);
+         sb.append("]");
+         return sb.toString();
+     }
+@@ -416,7 +518,10 @@ public class LitemallAdmin {
+             && (this.getAddTime() == null ? other.getAddTime() == null : this.getAddTime().equals(other.getAddTime()))
+             && (this.getUpdateTime() == null ? other.getUpdateTime() == null : this.getUpdateTime().equals(other.getUpdateTime()))
+             && (this.getDeleted() == null ? other.getDeleted() == null : this.getDeleted().equals(other.getDeleted()))
+-            && (Arrays.equals(this.getRoleIds(), other.getRoleIds()));
++            && (Arrays.equals(this.getRoleIds(), other.getRoleIds()))
++            && (this.getTenantId() == null ? other.getTenantId() == null : this.getTenantId().equals(other.getTenantId()))
++            && (this.getUserIdInTenant() == null ? other.getUserIdInTenant() == null : this.getUserIdInTenant().equals(other.getUserIdInTenant()))
++            && (this.getMobile() == null ? other.getMobile() == null : this.getMobile().equals(other.getMobile()));
+     }
+ 
+     /**
+@@ -439,6 +544,9 @@ public class LitemallAdmin {
+         result = prime * result + ((getUpdateTime() == null) ? 0 : getUpdateTime().hashCode());
+         result = prime * result + ((getDeleted() == null) ? 0 : getDeleted().hashCode());
+         result = prime * result + (Arrays.hashCode(getRoleIds()));
++        result = prime * result + ((getTenantId() == null) ? 0 : getTenantId().hashCode());
++        result = prime * result + ((getUserIdInTenant() == null) ? 0 : getUserIdInTenant().hashCode());
++        result = prime * result + ((getMobile() == null) ? 0 : getMobile().hashCode());
+         return result;
+     }
+ 
+@@ -526,7 +634,10 @@ public class LitemallAdmin {
+         addTime("add_time", "addTime", "TIMESTAMP", false),
+         updateTime("update_time", "updateTime", "TIMESTAMP", false),
+         deleted("deleted", "deleted", "BIT", false),
+-        roleIds("role_ids", "roleIds", "VARCHAR", false);
++        roleIds("role_ids", "roleIds", "VARCHAR", false),
++        tenantId("tenant_id", "tenantId", "VARCHAR", false),
++        userIdInTenant("user_id_in_tenant", "userIdInTenant", "INTEGER", false),
++        mobile("mobile", "mobile", "VARCHAR", false);
+ 
+         /**
+          * This field was generated by MyBatis Generator.
+diff --git a/litemall-db/src/main/java/org/linlinjava/litemall/db/domain/LitemallAdminExample.java b/litemall-db/src/main/java/org/linlinjava/litemall/db/domain/LitemallAdminExample.java
+index 8e769e3f..cfa155bd 100644
+--- a/litemall-db/src/main/java/org/linlinjava/litemall/db/domain/LitemallAdminExample.java
++++ b/litemall-db/src/main/java/org/linlinjava/litemall/db/domain/LitemallAdminExample.java
+@@ -1606,6 +1606,404 @@ public class LitemallAdminExample {
+             addRoleIdsCriterion("role_ids not between", value1, value2, "roleIds");
+             return (Criteria) this;
+         }
++
++        public Criteria andTenantIdIsNull() {
++            addCriterion("tenant_id is null");
++            return (Criteria) this;
++        }
++
++        public Criteria andTenantIdIsNotNull() {
++            addCriterion("tenant_id is not null");
++            return (Criteria) this;
++        }
++
++        public Criteria andTenantIdEqualTo(String value) {
++            addCriterion("tenant_id =", value, "tenantId");
++            return (Criteria) this;
++        }
++
++        /**
++         * This method was generated by MyBatis Generator.
++         * This method corresponds to the database table litemall_admin
++         *
++         * @mbg.generated
++         */
++        public Criteria andTenantIdEqualToColumn(LitemallAdmin.Column column) {
++            addCriterion(new StringBuilder("tenant_id = ").append(column.getEscapedColumnName()).toString());
++            return (Criteria) this;
++        }
++
++        public Criteria andTenantIdNotEqualTo(String value) {
++            addCriterion("tenant_id <>", value, "tenantId");
++            return (Criteria) this;
++        }
++
++        /**
++         * This method was generated by MyBatis Generator.
++         * This method corresponds to the database table litemall_admin
++         *
++         * @mbg.generated
++         */
++        public Criteria andTenantIdNotEqualToColumn(LitemallAdmin.Column column) {
++            addCriterion(new StringBuilder("tenant_id <> ").append(column.getEscapedColumnName()).toString());
++            return (Criteria) this;
++        }
++
++        public Criteria andTenantIdGreaterThan(String value) {
++            addCriterion("tenant_id >", value, "tenantId");
++            return (Criteria) this;
++        }
++
++        /**
++         * This method was generated by MyBatis Generator.
++         * This method corresponds to the database table litemall_admin
++         *
++         * @mbg.generated
++         */
++        public Criteria andTenantIdGreaterThanColumn(LitemallAdmin.Column column) {
++            addCriterion(new StringBuilder("tenant_id > ").append(column.getEscapedColumnName()).toString());
++            return (Criteria) this;
++        }
++
++        public Criteria andTenantIdGreaterThanOrEqualTo(String value) {
++            addCriterion("tenant_id >=", value, "tenantId");
++            return (Criteria) this;
++        }
++
++        /**
++         * This method was generated by MyBatis Generator.
++         * This method corresponds to the database table litemall_admin
++         *
++         * @mbg.generated
++         */
++        public Criteria andTenantIdGreaterThanOrEqualToColumn(LitemallAdmin.Column column) {
++            addCriterion(new StringBuilder("tenant_id >= ").append(column.getEscapedColumnName()).toString());
++            return (Criteria) this;
++        }
++
++        public Criteria andTenantIdLessThan(String value) {
++            addCriterion("tenant_id <", value, "tenantId");
++            return (Criteria) this;
++        }
++
++        /**
++         * This method was generated by MyBatis Generator.
++         * This method corresponds to the database table litemall_admin
++         *
++         * @mbg.generated
++         */
++        public Criteria andTenantIdLessThanColumn(LitemallAdmin.Column column) {
++            addCriterion(new StringBuilder("tenant_id < ").append(column.getEscapedColumnName()).toString());
++            return (Criteria) this;
++        }
++
++        public Criteria andTenantIdLessThanOrEqualTo(String value) {
++            addCriterion("tenant_id <=", value, "tenantId");
++            return (Criteria) this;
++        }
++
++        /**
++         * This method was generated by MyBatis Generator.
++         * This method corresponds to the database table litemall_admin
++         *
++         * @mbg.generated
++         */
++        public Criteria andTenantIdLessThanOrEqualToColumn(LitemallAdmin.Column column) {
++            addCriterion(new StringBuilder("tenant_id <= ").append(column.getEscapedColumnName()).toString());
++            return (Criteria) this;
++        }
++
++        public Criteria andTenantIdLike(String value) {
++            addCriterion("tenant_id like", value, "tenantId");
++            return (Criteria) this;
++        }
++
++        public Criteria andTenantIdNotLike(String value) {
++            addCriterion("tenant_id not like", value, "tenantId");
++            return (Criteria) this;
++        }
++
++        public Criteria andTenantIdIn(List<String> values) {
++            addCriterion("tenant_id in", values, "tenantId");
++            return (Criteria) this;
++        }
++
++        public Criteria andTenantIdNotIn(List<String> values) {
++            addCriterion("tenant_id not in", values, "tenantId");
++            return (Criteria) this;
++        }
++
++        public Criteria andTenantIdBetween(String value1, String value2) {
++            addCriterion("tenant_id between", value1, value2, "tenantId");
++            return (Criteria) this;
++        }
++
++        public Criteria andTenantIdNotBetween(String value1, String value2) {
++            addCriterion("tenant_id not between", value1, value2, "tenantId");
++            return (Criteria) this;
++        }
++
++        public Criteria andUserIdInTenantIsNull() {
++            addCriterion("user_id_in_tenant is null");
++            return (Criteria) this;
++        }
++
++        public Criteria andUserIdInTenantIsNotNull() {
++            addCriterion("user_id_in_tenant is not null");
++            return (Criteria) this;
++        }
++
++        public Criteria andUserIdInTenantEqualTo(Integer value) {
++            addCriterion("user_id_in_tenant =", value, "userIdInTenant");
++            return (Criteria) this;
++        }
++
++        /**
++         * This method was generated by MyBatis Generator.
++         * This method corresponds to the database table litemall_admin
++         *
++         * @mbg.generated
++         */
++        public Criteria andUserIdInTenantEqualToColumn(LitemallAdmin.Column column) {
++            addCriterion(new StringBuilder("user_id_in_tenant = ").append(column.getEscapedColumnName()).toString());
++            return (Criteria) this;
++        }
++
++        public Criteria andUserIdInTenantNotEqualTo(Integer value) {
++            addCriterion("user_id_in_tenant <>", value, "userIdInTenant");
++            return (Criteria) this;
++        }
++
++        /**
++         * This method was generated by MyBatis Generator.
++         * This method corresponds to the database table litemall_admin
++         *
++         * @mbg.generated
++         */
++        public Criteria andUserIdInTenantNotEqualToColumn(LitemallAdmin.Column column) {
++            addCriterion(new StringBuilder("user_id_in_tenant <> ").append(column.getEscapedColumnName()).toString());
++            return (Criteria) this;
++        }
++
++        public Criteria andUserIdInTenantGreaterThan(Integer value) {
++            addCriterion("user_id_in_tenant >", value, "userIdInTenant");
++            return (Criteria) this;
++        }
++
++        /**
++         * This method was generated by MyBatis Generator.
++         * This method corresponds to the database table litemall_admin
++         *
++         * @mbg.generated
++         */
++        public Criteria andUserIdInTenantGreaterThanColumn(LitemallAdmin.Column column) {
++            addCriterion(new StringBuilder("user_id_in_tenant > ").append(column.getEscapedColumnName()).toString());
++            return (Criteria) this;
++        }
++
++        public Criteria andUserIdInTenantGreaterThanOrEqualTo(Integer value) {
++            addCriterion("user_id_in_tenant >=", value, "userIdInTenant");
++            return (Criteria) this;
++        }
++
++        /**
++         * This method was generated by MyBatis Generator.
++         * This method corresponds to the database table litemall_admin
++         *
++         * @mbg.generated
++         */
++        public Criteria andUserIdInTenantGreaterThanOrEqualToColumn(LitemallAdmin.Column column) {
++            addCriterion(new StringBuilder("user_id_in_tenant >= ").append(column.getEscapedColumnName()).toString());
++            return (Criteria) this;
++        }
++
++        public Criteria andUserIdInTenantLessThan(Integer value) {
++            addCriterion("user_id_in_tenant <", value, "userIdInTenant");
++            return (Criteria) this;
++        }
++
++        /**
++         * This method was generated by MyBatis Generator.
++         * This method corresponds to the database table litemall_admin
++         *
++         * @mbg.generated
++         */
++        public Criteria andUserIdInTenantLessThanColumn(LitemallAdmin.Column column) {
++            addCriterion(new StringBuilder("user_id_in_tenant < ").append(column.getEscapedColumnName()).toString());
++            return (Criteria) this;
++        }
++
++        public Criteria andUserIdInTenantLessThanOrEqualTo(Integer value) {
++            addCriterion("user_id_in_tenant <=", value, "userIdInTenant");
++            return (Criteria) this;
++        }
++
++        /**
++         * This method was generated by MyBatis Generator.
++         * This method corresponds to the database table litemall_admin
++         *
++         * @mbg.generated
++         */
++        public Criteria andUserIdInTenantLessThanOrEqualToColumn(LitemallAdmin.Column column) {
++            addCriterion(new StringBuilder("user_id_in_tenant <= ").append(column.getEscapedColumnName()).toString());
++            return (Criteria) this;
++        }
++
++        public Criteria andUserIdInTenantIn(List<Integer> values) {
++            addCriterion("user_id_in_tenant in", values, "userIdInTenant");
++            return (Criteria) this;
++        }
++
++        public Criteria andUserIdInTenantNotIn(List<Integer> values) {
++            addCriterion("user_id_in_tenant not in", values, "userIdInTenant");
++            return (Criteria) this;
++        }
++
++        public Criteria andUserIdInTenantBetween(Integer value1, Integer value2) {
++            addCriterion("user_id_in_tenant between", value1, value2, "userIdInTenant");
++            return (Criteria) this;
++        }
++
++        public Criteria andUserIdInTenantNotBetween(Integer value1, Integer value2) {
++            addCriterion("user_id_in_tenant not between", value1, value2, "userIdInTenant");
++            return (Criteria) this;
++        }
++
++        public Criteria andMobileIsNull() {
++            addCriterion("mobile is null");
++            return (Criteria) this;
++        }
++
++        public Criteria andMobileIsNotNull() {
++            addCriterion("mobile is not null");
++            return (Criteria) this;
++        }
++
++        public Criteria andMobileEqualTo(String value) {
++            addCriterion("mobile =", value, "mobile");
++            return (Criteria) this;
++        }
++
++        /**
++         * This method was generated by MyBatis Generator.
++         * This method corresponds to the database table litemall_admin
++         *
++         * @mbg.generated
++         */
++        public Criteria andMobileEqualToColumn(LitemallAdmin.Column column) {
++            addCriterion(new StringBuilder("mobile = ").append(column.getEscapedColumnName()).toString());
++            return (Criteria) this;
++        }
++
++        public Criteria andMobileNotEqualTo(String value) {
++            addCriterion("mobile <>", value, "mobile");
++            return (Criteria) this;
++        }
++
++        /**
++         * This method was generated by MyBatis Generator.
++         * This method corresponds to the database table litemall_admin
++         *
++         * @mbg.generated
++         */
++        public Criteria andMobileNotEqualToColumn(LitemallAdmin.Column column) {
++            addCriterion(new StringBuilder("mobile <> ").append(column.getEscapedColumnName()).toString());
++            return (Criteria) this;
++        }
++
++        public Criteria andMobileGreaterThan(String value) {
++            addCriterion("mobile >", value, "mobile");
++            return (Criteria) this;
++        }
++
++        /**
++         * This method was generated by MyBatis Generator.
++         * This method corresponds to the database table litemall_admin
++         *
++         * @mbg.generated
++         */
++        public Criteria andMobileGreaterThanColumn(LitemallAdmin.Column column) {
++            addCriterion(new StringBuilder("mobile > ").append(column.getEscapedColumnName()).toString());
++            return (Criteria) this;
++        }
++
++        public Criteria andMobileGreaterThanOrEqualTo(String value) {
++            addCriterion("mobile >=", value, "mobile");
++            return (Criteria) this;
++        }
++
++        /**
++         * This method was generated by MyBatis Generator.
++         * This method corresponds to the database table litemall_admin
++         *
++         * @mbg.generated
++         */
++        public Criteria andMobileGreaterThanOrEqualToColumn(LitemallAdmin.Column column) {
++            addCriterion(new StringBuilder("mobile >= ").append(column.getEscapedColumnName()).toString());
++            return (Criteria) this;
++        }
++
++        public Criteria andMobileLessThan(String value) {
++            addCriterion("mobile <", value, "mobile");
++            return (Criteria) this;
++        }
++
++        /**
++         * This method was generated by MyBatis Generator.
++         * This method corresponds to the database table litemall_admin
++         *
++         * @mbg.generated
++         */
++        public Criteria andMobileLessThanColumn(LitemallAdmin.Column column) {
++            addCriterion(new StringBuilder("mobile < ").append(column.getEscapedColumnName()).toString());
++            return (Criteria) this;
++        }
++
++        public Criteria andMobileLessThanOrEqualTo(String value) {
++            addCriterion("mobile <=", value, "mobile");
++            return (Criteria) this;
++        }
++
++        /**
++         * This method was generated by MyBatis Generator.
++         * This method corresponds to the database table litemall_admin
++         *
++         * @mbg.generated
++         */
++        public Criteria andMobileLessThanOrEqualToColumn(LitemallAdmin.Column column) {
++            addCriterion(new StringBuilder("mobile <= ").append(column.getEscapedColumnName()).toString());
++            return (Criteria) this;
++        }
++
++        public Criteria andMobileLike(String value) {
++            addCriterion("mobile like", value, "mobile");
++            return (Criteria) this;
++        }
++
++        public Criteria andMobileNotLike(String value) {
++            addCriterion("mobile not like", value, "mobile");
++            return (Criteria) this;
++        }
++
++        public Criteria andMobileIn(List<String> values) {
++            addCriterion("mobile in", values, "mobile");
++            return (Criteria) this;
++        }
++
++        public Criteria andMobileNotIn(List<String> values) {
++            addCriterion("mobile not in", values, "mobile");
++            return (Criteria) this;
++        }
++
++        public Criteria andMobileBetween(String value1, String value2) {
++            addCriterion("mobile between", value1, value2, "mobile");
++            return (Criteria) this;
++        }
++
++        public Criteria andMobileNotBetween(String value1, String value2) {
++            addCriterion("mobile not between", value1, value2, "mobile");
++            return (Criteria) this;
++        }
+     }
+ 
+     /**
+diff --git a/litemall-db/src/main/java/org/linlinjava/litemall/db/domain/LitemallStakeholders.java b/litemall-db/src/main/java/org/linlinjava/litemall/db/domain/LitemallStakeholders.java
+new file mode 100644
+index 00000000..77959e02
+--- /dev/null
++++ b/litemall-db/src/main/java/org/linlinjava/litemall/db/domain/LitemallStakeholders.java
+@@ -0,0 +1,334 @@
++package org.linlinjava.litemall.db.domain;
++
++import java.util.ArrayList;
++import java.util.Arrays;
++
++public class LitemallStakeholders {
++    /**
++     *
++     * This field was generated by MyBatis Generator.
++     * This field corresponds to the database column litemall_stakeholders.id
++     *
++     * @mbg.generated
++     */
++    private Integer id;
++
++    /**
++     *
++     * This field was generated by MyBatis Generator.
++     * This field corresponds to the database column litemall_stakeholders.name
++     *
++     * @mbg.generated
++     */
++    private String name;
++
++    /**
++     *
++     * This field was generated by MyBatis Generator.
++     * This field corresponds to the database column litemall_stakeholders.sex
++     *
++     * @mbg.generated
++     */
++    private String sex;
++
++    /**
++     * This method was generated by MyBatis Generator.
++     * This method returns the value of the database column litemall_stakeholders.id
++     *
++     * @return the value of litemall_stakeholders.id
++     *
++     * @mbg.generated
++     */
++    public Integer getId() {
++        return id;
++    }
++
++    /**
++     * This method was generated by MyBatis Generator.
++     * This method sets the value of the database column litemall_stakeholders.id
++     *
++     * @param id the value for litemall_stakeholders.id
++     *
++     * @mbg.generated
++     */
++    public void setId(Integer id) {
++        this.id = id;
++    }
++
++    /**
++     * This method was generated by MyBatis Generator.
++     * This method returns the value of the database column litemall_stakeholders.name
++     *
++     * @return the value of litemall_stakeholders.name
++     *
++     * @mbg.generated
++     */
++    public String getName() {
++        return name;
++    }
++
++    /**
++     * This method was generated by MyBatis Generator.
++     * This method sets the value of the database column litemall_stakeholders.name
++     *
++     * @param name the value for litemall_stakeholders.name
++     *
++     * @mbg.generated
++     */
++    public void setName(String name) {
++        this.name = name;
++    }
++
++    /**
++     * This method was generated by MyBatis Generator.
++     * This method returns the value of the database column litemall_stakeholders.sex
++     *
++     * @return the value of litemall_stakeholders.sex
++     *
++     * @mbg.generated
++     */
++    public String getSex() {
++        return sex;
++    }
++
++    /**
++     * This method was generated by MyBatis Generator.
++     * This method sets the value of the database column litemall_stakeholders.sex
++     *
++     * @param sex the value for litemall_stakeholders.sex
++     *
++     * @mbg.generated
++     */
++    public void setSex(String sex) {
++        this.sex = sex;
++    }
++
++    /**
++     * This method was generated by MyBatis Generator.
++     * This method corresponds to the database table litemall_stakeholders
++     *
++     * @mbg.generated
++     */
++    @Override
++    public String toString() {
++        StringBuilder sb = new StringBuilder();
++        sb.append(getClass().getSimpleName());
++        sb.append(" [");
++        sb.append("Hash = ").append(hashCode());
++        sb.append(", id=").append(id);
++        sb.append(", name=").append(name);
++        sb.append(", sex=").append(sex);
++        sb.append("]");
++        return sb.toString();
++    }
++
++    /**
++     * This method was generated by MyBatis Generator.
++     * This method corresponds to the database table litemall_stakeholders
++     *
++     * @mbg.generated
++     */
++    @Override
++    public boolean equals(Object that) {
++        if (this == that) {
++            return true;
++        }
++        if (that == null) {
++            return false;
++        }
++        if (getClass() != that.getClass()) {
++            return false;
++        }
++        LitemallStakeholders other = (LitemallStakeholders) that;
++        return (this.getId() == null ? other.getId() == null : this.getId().equals(other.getId()))
++            && (this.getName() == null ? other.getName() == null : this.getName().equals(other.getName()))
++            && (this.getSex() == null ? other.getSex() == null : this.getSex().equals(other.getSex()));
++    }
++
++    /**
++     * This method was generated by MyBatis Generator.
++     * This method corresponds to the database table litemall_stakeholders
++     *
++     * @mbg.generated
++     */
++    @Override
++    public int hashCode() {
++        final int prime = 31;
++        int result = 1;
++        result = prime * result + ((getId() == null) ? 0 : getId().hashCode());
++        result = prime * result + ((getName() == null) ? 0 : getName().hashCode());
++        result = prime * result + ((getSex() == null) ? 0 : getSex().hashCode());
++        return result;
++    }
++
++    /**
++     * This enum was generated by MyBatis Generator.
++     * This enum corresponds to the database table litemall_stakeholders
++     *
++     * @mbg.generated
++     */
++    public enum Column {
++        id("id", "id", "INTEGER", false),
++        name("name", "name", "VARCHAR", true),
++        sex("sex", "sex", "VARCHAR", false);
++
++        /**
++         * This field was generated by MyBatis Generator.
++         * This field corresponds to the database table litemall_stakeholders
++         *
++         * @mbg.generated
++         */
++        private static final String BEGINNING_DELIMITER = "`";
++
++        /**
++         * This field was generated by MyBatis Generator.
++         * This field corresponds to the database table litemall_stakeholders
++         *
++         * @mbg.generated
++         */
++        private static final String ENDING_DELIMITER = "`";
++
++        /**
++         * This field was generated by MyBatis Generator.
++         * This field corresponds to the database table litemall_stakeholders
++         *
++         * @mbg.generated
++         */
++        private final String column;
++
++        /**
++         * This field was generated by MyBatis Generator.
++         * This field corresponds to the database table litemall_stakeholders
++         *
++         * @mbg.generated
++         */
++        private final boolean isColumnNameDelimited;
++
++        /**
++         * This field was generated by MyBatis Generator.
++         * This field corresponds to the database table litemall_stakeholders
++         *
++         * @mbg.generated
++         */
++        private final String javaProperty;
++
++        /**
++         * This field was generated by MyBatis Generator.
++         * This field corresponds to the database table litemall_stakeholders
++         *
++         * @mbg.generated
++         */
++        private final String jdbcType;
++
++        /**
++         * This method was generated by MyBatis Generator.
++         * This method corresponds to the database table litemall_stakeholders
++         *
++         * @mbg.generated
++         */
++        public String value() {
++            return this.column;
++        }
++
++        /**
++         * This method was generated by MyBatis Generator.
++         * This method corresponds to the database table litemall_stakeholders
++         *
++         * @mbg.generated
++         */
++        public String getValue() {
++            return this.column;
++        }
++
++        /**
++         * This method was generated by MyBatis Generator.
++         * This method corresponds to the database table litemall_stakeholders
++         *
++         * @mbg.generated
++         */
++        public String getJavaProperty() {
++            return this.javaProperty;
++        }
++
++        /**
++         * This method was generated by MyBatis Generator.
++         * This method corresponds to the database table litemall_stakeholders
++         *
++         * @mbg.generated
++         */
++        public String getJdbcType() {
++            return this.jdbcType;
++        }
++
++        /**
++         * This method was generated by MyBatis Generator.
++         * This method corresponds to the database table litemall_stakeholders
++         *
++         * @mbg.generated
++         */
++        Column(String column, String javaProperty, String jdbcType, boolean isColumnNameDelimited) {
++            this.column = column;
++            this.javaProperty = javaProperty;
++            this.jdbcType = jdbcType;
++            this.isColumnNameDelimited = isColumnNameDelimited;
++        }
++
++        /**
++         * This method was generated by MyBatis Generator.
++         * This method corresponds to the database table litemall_stakeholders
++         *
++         * @mbg.generated
++         */
++        public String desc() {
++            return this.getEscapedColumnName() + " DESC";
++        }
++
++        /**
++         * This method was generated by MyBatis Generator.
++         * This method corresponds to the database table litemall_stakeholders
++         *
++         * @mbg.generated
++         */
++        public String asc() {
++            return this.getEscapedColumnName() + " ASC";
++        }
++
++        /**
++         * This method was generated by MyBatis Generator.
++         * This method corresponds to the database table litemall_stakeholders
++         *
++         * @mbg.generated
++         */
++        public static Column[] excludes(Column ... excludes) {
++            ArrayList<Column> columns = new ArrayList<>(Arrays.asList(Column.values()));
++            if (excludes != null && excludes.length > 0) {
++                columns.removeAll(new ArrayList<>(Arrays.asList(excludes)));
++            }
++            return columns.toArray(new Column[]{});
++        }
++
++        /**
++         * This method was generated by MyBatis Generator.
++         * This method corresponds to the database table litemall_stakeholders
++         *
++         * @mbg.generated
++         */
++        public String getEscapedColumnName() {
++            if (this.isColumnNameDelimited) {
++                return new StringBuilder().append(BEGINNING_DELIMITER).append(this.column).append(ENDING_DELIMITER).toString();
++            } else {
++                return this.column;
++            }
++        }
++
++        /**
++         * This method was generated by MyBatis Generator.
++         * This method corresponds to the database table litemall_stakeholders
++         *
++         * @mbg.generated
++         */
++        public String getAliasedEscapedColumnName() {
++            return this.getEscapedColumnName();
++        }
++    }
++}
+\ No newline at end of file
+diff --git a/litemall-db/src/main/java/org/linlinjava/litemall/db/domain/LitemallStakeholdersExample.java b/litemall-db/src/main/java/org/linlinjava/litemall/db/domain/LitemallStakeholdersExample.java
+new file mode 100644
+index 00000000..15904ce6
+--- /dev/null
++++ b/litemall-db/src/main/java/org/linlinjava/litemall/db/domain/LitemallStakeholdersExample.java
+@@ -0,0 +1,865 @@
++package org.linlinjava.litemall.db.domain;
++
++import java.util.ArrayList;
++import java.util.List;
++
++public class LitemallStakeholdersExample {
++    /**
++     * This field was generated by MyBatis Generator.
++     * This field corresponds to the database table litemall_stakeholders
++     *
++     * @mbg.generated
++     */
++    protected String orderByClause;
++
++    /**
++     * This field was generated by MyBatis Generator.
++     * This field corresponds to the database table litemall_stakeholders
++     *
++     * @mbg.generated
++     */
++    protected boolean distinct;
++
++    /**
++     * This field was generated by MyBatis Generator.
++     * This field corresponds to the database table litemall_stakeholders
++     *
++     * @mbg.generated
++     */
++    protected List<Criteria> oredCriteria;
++
++    /**
++     * This method was generated by MyBatis Generator.
++     * This method corresponds to the database table litemall_stakeholders
++     *
++     * @mbg.generated
++     */
++    public LitemallStakeholdersExample() {
++        oredCriteria = new ArrayList<Criteria>();
++    }
++
++    /**
++     * This method was generated by MyBatis Generator.
++     * This method corresponds to the database table litemall_stakeholders
++     *
++     * @mbg.generated
++     */
++    public void setOrderByClause(String orderByClause) {
++        this.orderByClause = orderByClause;
++    }
++
++    /**
++     * This method was generated by MyBatis Generator.
++     * This method corresponds to the database table litemall_stakeholders
++     *
++     * @mbg.generated
++     */
++    public String getOrderByClause() {
++        return orderByClause;
++    }
++
++    /**
++     * This method was generated by MyBatis Generator.
++     * This method corresponds to the database table litemall_stakeholders
++     *
++     * @mbg.generated
++     */
++    public void setDistinct(boolean distinct) {
++        this.distinct = distinct;
++    }
++
++    /**
++     * This method was generated by MyBatis Generator.
++     * This method corresponds to the database table litemall_stakeholders
++     *
++     * @mbg.generated
++     */
++    public boolean isDistinct() {
++        return distinct;
++    }
++
++    /**
++     * This method was generated by MyBatis Generator.
++     * This method corresponds to the database table litemall_stakeholders
++     *
++     * @mbg.generated
++     */
++    public List<Criteria> getOredCriteria() {
++        return oredCriteria;
++    }
++
++    /**
++     * This method was generated by MyBatis Generator.
++     * This method corresponds to the database table litemall_stakeholders
++     *
++     * @mbg.generated
++     */
++    public void or(Criteria criteria) {
++        oredCriteria.add(criteria);
++    }
++
++    /**
++     * This method was generated by MyBatis Generator.
++     * This method corresponds to the database table litemall_stakeholders
++     *
++     * @mbg.generated
++     */
++    public Criteria or() {
++        Criteria criteria = createCriteriaInternal();
++        oredCriteria.add(criteria);
++        return criteria;
++    }
++
++    /**
++     * This method was generated by MyBatis Generator.
++     * This method corresponds to the database table litemall_stakeholders
++     *
++     * @mbg.generated
++     */
++    public LitemallStakeholdersExample orderBy(String orderByClause) {
++        this.setOrderByClause(orderByClause);
++        return this;
++    }
++
++    /**
++     * This method was generated by MyBatis Generator.
++     * This method corresponds to the database table litemall_stakeholders
++     *
++     * @mbg.generated
++     */
++    public LitemallStakeholdersExample orderBy(String ... orderByClauses) {
++        StringBuffer sb = new StringBuffer();
++        for (int i = 0; i < orderByClauses.length; i++) {
++            sb.append(orderByClauses[i]);
++            if (i < orderByClauses.length - 1) {
++                sb.append(" , ");
++            }
++        }
++        this.setOrderByClause(sb.toString());
++        return this;
++    }
++
++    /**
++     * This method was generated by MyBatis Generator.
++     * This method corresponds to the database table litemall_stakeholders
++     *
++     * @mbg.generated
++     */
++    public Criteria createCriteria() {
++        Criteria criteria = createCriteriaInternal();
++        if (oredCriteria.size() == 0) {
++            oredCriteria.add(criteria);
++        }
++        return criteria;
++    }
++
++    /**
++     * This method was generated by MyBatis Generator.
++     * This method corresponds to the database table litemall_stakeholders
++     *
++     * @mbg.generated
++     */
++    protected Criteria createCriteriaInternal() {
++        Criteria criteria = new Criteria(this);
++        return criteria;
++    }
++
++    /**
++     * This method was generated by MyBatis Generator.
++     * This method corresponds to the database table litemall_stakeholders
++     *
++     * @mbg.generated
++     */
++    public void clear() {
++        oredCriteria.clear();
++        orderByClause = null;
++        distinct = false;
++    }
++
++    /**
++     * This method was generated by MyBatis Generator.
++     * This method corresponds to the database table litemall_stakeholders
++     *
++     * @mbg.generated
++     */
++    public static Criteria newAndCreateCriteria() {
++        LitemallStakeholdersExample example = new LitemallStakeholdersExample();
++        return example.createCriteria();
++    }
++
++    /**
++     * This method was generated by MyBatis Generator.
++     * This method corresponds to the database table litemall_stakeholders
++     *
++     * @mbg.generated
++     */
++    public LitemallStakeholdersExample when(boolean condition, IExampleWhen then) {
++        if (condition) {
++            then.example(this);
++        }
++        return this;
++    }
++
++    /**
++     * This method was generated by MyBatis Generator.
++     * This method corresponds to the database table litemall_stakeholders
++     *
++     * @mbg.generated
++     */
++    public LitemallStakeholdersExample when(boolean condition, IExampleWhen then, IExampleWhen otherwise) {
++        if (condition) {
++            then.example(this);
++        } else {
++            otherwise.example(this);
++        }
++        return this;
++    }
++
++    /**
++     * This class was generated by MyBatis Generator.
++     * This class corresponds to the database table litemall_stakeholders
++     *
++     * @mbg.generated
++     */
++    protected abstract static class GeneratedCriteria {
++        protected List<Criterion> criteria;
++
++        protected GeneratedCriteria() {
++            super();
++            criteria = new ArrayList<Criterion>();
++        }
++
++        public boolean isValid() {
++            return criteria.size() > 0;
++        }
++
++        public List<Criterion> getAllCriteria() {
++            return criteria;
++        }
++
++        public List<Criterion> getCriteria() {
++            return criteria;
++        }
++
++        protected void addCriterion(String condition) {
++            if (condition == null) {
++                throw new RuntimeException("Value for condition cannot be null");
++            }
++            criteria.add(new Criterion(condition));
++        }
++
++        protected void addCriterion(String condition, Object value, String property) {
++            if (value == null) {
++                throw new RuntimeException("Value for " + property + " cannot be null");
++            }
++            criteria.add(new Criterion(condition, value));
++        }
++
++        protected void addCriterion(String condition, Object value1, Object value2, String property) {
++            if (value1 == null || value2 == null) {
++                throw new RuntimeException("Between values for " + property + " cannot be null");
++            }
++            criteria.add(new Criterion(condition, value1, value2));
++        }
++
++        public Criteria andIdIsNull() {
++            addCriterion("id is null");
++            return (Criteria) this;
++        }
++
++        public Criteria andIdIsNotNull() {
++            addCriterion("id is not null");
++            return (Criteria) this;
++        }
++
++        public Criteria andIdEqualTo(Integer value) {
++            addCriterion("id =", value, "id");
++            return (Criteria) this;
++        }
++
++        /**
++         * This method was generated by MyBatis Generator.
++         * This method corresponds to the database table litemall_stakeholders
++         *
++         * @mbg.generated
++         */
++        public Criteria andIdEqualToColumn(LitemallStakeholders.Column column) {
++            addCriterion(new StringBuilder("id = ").append(column.getEscapedColumnName()).toString());
++            return (Criteria) this;
++        }
++
++        public Criteria andIdNotEqualTo(Integer value) {
++            addCriterion("id <>", value, "id");
++            return (Criteria) this;
++        }
++
++        /**
++         * This method was generated by MyBatis Generator.
++         * This method corresponds to the database table litemall_stakeholders
++         *
++         * @mbg.generated
++         */
++        public Criteria andIdNotEqualToColumn(LitemallStakeholders.Column column) {
++            addCriterion(new StringBuilder("id <> ").append(column.getEscapedColumnName()).toString());
++            return (Criteria) this;
++        }
++
++        public Criteria andIdGreaterThan(Integer value) {
++            addCriterion("id >", value, "id");
++            return (Criteria) this;
++        }
++
++        /**
++         * This method was generated by MyBatis Generator.
++         * This method corresponds to the database table litemall_stakeholders
++         *
++         * @mbg.generated
++         */
++        public Criteria andIdGreaterThanColumn(LitemallStakeholders.Column column) {
++            addCriterion(new StringBuilder("id > ").append(column.getEscapedColumnName()).toString());
++            return (Criteria) this;
++        }
++
++        public Criteria andIdGreaterThanOrEqualTo(Integer value) {
++            addCriterion("id >=", value, "id");
++            return (Criteria) this;
++        }
++
++        /**
++         * This method was generated by MyBatis Generator.
++         * This method corresponds to the database table litemall_stakeholders
++         *
++         * @mbg.generated
++         */
++        public Criteria andIdGreaterThanOrEqualToColumn(LitemallStakeholders.Column column) {
++            addCriterion(new StringBuilder("id >= ").append(column.getEscapedColumnName()).toString());
++            return (Criteria) this;
++        }
++
++        public Criteria andIdLessThan(Integer value) {
++            addCriterion("id <", value, "id");
++            return (Criteria) this;
++        }
++
++        /**
++         * This method was generated by MyBatis Generator.
++         * This method corresponds to the database table litemall_stakeholders
++         *
++         * @mbg.generated
++         */
++        public Criteria andIdLessThanColumn(LitemallStakeholders.Column column) {
++            addCriterion(new StringBuilder("id < ").append(column.getEscapedColumnName()).toString());
++            return (Criteria) this;
++        }
++
++        public Criteria andIdLessThanOrEqualTo(Integer value) {
++            addCriterion("id <=", value, "id");
++            return (Criteria) this;
++        }
++
++        /**
++         * This method was generated by MyBatis Generator.
++         * This method corresponds to the database table litemall_stakeholders
++         *
++         * @mbg.generated
++         */
++        public Criteria andIdLessThanOrEqualToColumn(LitemallStakeholders.Column column) {
++            addCriterion(new StringBuilder("id <= ").append(column.getEscapedColumnName()).toString());
++            return (Criteria) this;
++        }
++
++        public Criteria andIdIn(List<Integer> values) {
++            addCriterion("id in", values, "id");
++            return (Criteria) this;
++        }
++
++        public Criteria andIdNotIn(List<Integer> values) {
++            addCriterion("id not in", values, "id");
++            return (Criteria) this;
++        }
++
++        public Criteria andIdBetween(Integer value1, Integer value2) {
++            addCriterion("id between", value1, value2, "id");
++            return (Criteria) this;
++        }
++
++        public Criteria andIdNotBetween(Integer value1, Integer value2) {
++            addCriterion("id not between", value1, value2, "id");
++            return (Criteria) this;
++        }
++
++        public Criteria andNameIsNull() {
++            addCriterion("`name` is null");
++            return (Criteria) this;
++        }
++
++        public Criteria andNameIsNotNull() {
++            addCriterion("`name` is not null");
++            return (Criteria) this;
++        }
++
++        public Criteria andNameEqualTo(String value) {
++            addCriterion("`name` =", value, "name");
++            return (Criteria) this;
++        }
++
++        /**
++         * This method was generated by MyBatis Generator.
++         * This method corresponds to the database table litemall_stakeholders
++         *
++         * @mbg.generated
++         */
++        public Criteria andNameEqualToColumn(LitemallStakeholders.Column column) {
++            addCriterion(new StringBuilder("`name` = ").append(column.getEscapedColumnName()).toString());
++            return (Criteria) this;
++        }
++
++        public Criteria andNameNotEqualTo(String value) {
++            addCriterion("`name` <>", value, "name");
++            return (Criteria) this;
++        }
++
++        /**
++         * This method was generated by MyBatis Generator.
++         * This method corresponds to the database table litemall_stakeholders
++         *
++         * @mbg.generated
++         */
++        public Criteria andNameNotEqualToColumn(LitemallStakeholders.Column column) {
++            addCriterion(new StringBuilder("`name` <> ").append(column.getEscapedColumnName()).toString());
++            return (Criteria) this;
++        }
++
++        public Criteria andNameGreaterThan(String value) {
++            addCriterion("`name` >", value, "name");
++            return (Criteria) this;
++        }
++
++        /**
++         * This method was generated by MyBatis Generator.
++         * This method corresponds to the database table litemall_stakeholders
++         *
++         * @mbg.generated
++         */
++        public Criteria andNameGreaterThanColumn(LitemallStakeholders.Column column) {
++            addCriterion(new StringBuilder("`name` > ").append(column.getEscapedColumnName()).toString());
++            return (Criteria) this;
++        }
++
++        public Criteria andNameGreaterThanOrEqualTo(String value) {
++            addCriterion("`name` >=", value, "name");
++            return (Criteria) this;
++        }
++
++        /**
++         * This method was generated by MyBatis Generator.
++         * This method corresponds to the database table litemall_stakeholders
++         *
++         * @mbg.generated
++         */
++        public Criteria andNameGreaterThanOrEqualToColumn(LitemallStakeholders.Column column) {
++            addCriterion(new StringBuilder("`name` >= ").append(column.getEscapedColumnName()).toString());
++            return (Criteria) this;
++        }
++
++        public Criteria andNameLessThan(String value) {
++            addCriterion("`name` <", value, "name");
++            return (Criteria) this;
++        }
++
++        /**
++         * This method was generated by MyBatis Generator.
++         * This method corresponds to the database table litemall_stakeholders
++         *
++         * @mbg.generated
++         */
++        public Criteria andNameLessThanColumn(LitemallStakeholders.Column column) {
++            addCriterion(new StringBuilder("`name` < ").append(column.getEscapedColumnName()).toString());
++            return (Criteria) this;
++        }
++
++        public Criteria andNameLessThanOrEqualTo(String value) {
++            addCriterion("`name` <=", value, "name");
++            return (Criteria) this;
++        }
++
++        /**
++         * This method was generated by MyBatis Generator.
++         * This method corresponds to the database table litemall_stakeholders
++         *
++         * @mbg.generated
++         */
++        public Criteria andNameLessThanOrEqualToColumn(LitemallStakeholders.Column column) {
++            addCriterion(new StringBuilder("`name` <= ").append(column.getEscapedColumnName()).toString());
++            return (Criteria) this;
++        }
++
++        public Criteria andNameLike(String value) {
++            addCriterion("`name` like", value, "name");
++            return (Criteria) this;
++        }
++
++        public Criteria andNameNotLike(String value) {
++            addCriterion("`name` not like", value, "name");
++            return (Criteria) this;
++        }
++
++        public Criteria andNameIn(List<String> values) {
++            addCriterion("`name` in", values, "name");
++            return (Criteria) this;
++        }
++
++        public Criteria andNameNotIn(List<String> values) {
++            addCriterion("`name` not in", values, "name");
++            return (Criteria) this;
++        }
++
++        public Criteria andNameBetween(String value1, String value2) {
++            addCriterion("`name` between", value1, value2, "name");
++            return (Criteria) this;
++        }
++
++        public Criteria andNameNotBetween(String value1, String value2) {
++            addCriterion("`name` not between", value1, value2, "name");
++            return (Criteria) this;
++        }
++
++        public Criteria andSexIsNull() {
++            addCriterion("sex is null");
++            return (Criteria) this;
++        }
++
++        public Criteria andSexIsNotNull() {
++            addCriterion("sex is not null");
++            return (Criteria) this;
++        }
++
++        public Criteria andSexEqualTo(String value) {
++            addCriterion("sex =", value, "sex");
++            return (Criteria) this;
++        }
++
++        /**
++         * This method was generated by MyBatis Generator.
++         * This method corresponds to the database table litemall_stakeholders
++         *
++         * @mbg.generated
++         */
++        public Criteria andSexEqualToColumn(LitemallStakeholders.Column column) {
++            addCriterion(new StringBuilder("sex = ").append(column.getEscapedColumnName()).toString());
++            return (Criteria) this;
++        }
++
++        public Criteria andSexNotEqualTo(String value) {
++            addCriterion("sex <>", value, "sex");
++            return (Criteria) this;
++        }
++
++        /**
++         * This method was generated by MyBatis Generator.
++         * This method corresponds to the database table litemall_stakeholders
++         *
++         * @mbg.generated
++         */
++        public Criteria andSexNotEqualToColumn(LitemallStakeholders.Column column) {
++            addCriterion(new StringBuilder("sex <> ").append(column.getEscapedColumnName()).toString());
++            return (Criteria) this;
++        }
++
++        public Criteria andSexGreaterThan(String value) {
++            addCriterion("sex >", value, "sex");
++            return (Criteria) this;
++        }
++
++        /**
++         * This method was generated by MyBatis Generator.
++         * This method corresponds to the database table litemall_stakeholders
++         *
++         * @mbg.generated
++         */
++        public Criteria andSexGreaterThanColumn(LitemallStakeholders.Column column) {
++            addCriterion(new StringBuilder("sex > ").append(column.getEscapedColumnName()).toString());
++            return (Criteria) this;
++        }
++
++        public Criteria andSexGreaterThanOrEqualTo(String value) {
++            addCriterion("sex >=", value, "sex");
++            return (Criteria) this;
++        }
++
++        /**
++         * This method was generated by MyBatis Generator.
++         * This method corresponds to the database table litemall_stakeholders
++         *
++         * @mbg.generated
++         */
++        public Criteria andSexGreaterThanOrEqualToColumn(LitemallStakeholders.Column column) {
++            addCriterion(new StringBuilder("sex >= ").append(column.getEscapedColumnName()).toString());
++            return (Criteria) this;
++        }
++
++        public Criteria andSexLessThan(String value) {
++            addCriterion("sex <", value, "sex");
++            return (Criteria) this;
++        }
++
++        /**
++         * This method was generated by MyBatis Generator.
++         * This method corresponds to the database table litemall_stakeholders
++         *
++         * @mbg.generated
++         */
++        public Criteria andSexLessThanColumn(LitemallStakeholders.Column column) {
++            addCriterion(new StringBuilder("sex < ").append(column.getEscapedColumnName()).toString());
++            return (Criteria) this;
++        }
++
++        public Criteria andSexLessThanOrEqualTo(String value) {
++            addCriterion("sex <=", value, "sex");
++            return (Criteria) this;
++        }
++
++        /**
++         * This method was generated by MyBatis Generator.
++         * This method corresponds to the database table litemall_stakeholders
++         *
++         * @mbg.generated
++         */
++        public Criteria andSexLessThanOrEqualToColumn(LitemallStakeholders.Column column) {
++            addCriterion(new StringBuilder("sex <= ").append(column.getEscapedColumnName()).toString());
++            return (Criteria) this;
++        }
++
++        public Criteria andSexLike(String value) {
++            addCriterion("sex like", value, "sex");
++            return (Criteria) this;
++        }
++
++        public Criteria andSexNotLike(String value) {
++            addCriterion("sex not like", value, "sex");
++            return (Criteria) this;
++        }
++
++        public Criteria andSexIn(List<String> values) {
++            addCriterion("sex in", values, "sex");
++            return (Criteria) this;
++        }
++
++        public Criteria andSexNotIn(List<String> values) {
++            addCriterion("sex not in", values, "sex");
++            return (Criteria) this;
++        }
++
++        public Criteria andSexBetween(String value1, String value2) {
++            addCriterion("sex between", value1, value2, "sex");
++            return (Criteria) this;
++        }
++
++        public Criteria andSexNotBetween(String value1, String value2) {
++            addCriterion("sex not between", value1, value2, "sex");
++            return (Criteria) this;
++        }
++    }
++
++    /**
++     * This class was generated by MyBatis Generator.
++     * This class corresponds to the database table litemall_stakeholders
++     *
++     * @mbg.generated do_not_delete_during_merge
++     */
++    public static class Criteria extends GeneratedCriteria {
++        /**
++         * This field was generated by MyBatis Generator.
++         * This field corresponds to the database table litemall_stakeholders
++         *
++         * @mbg.generated
++         */
++        private LitemallStakeholdersExample example;
++
++        /**
++         * This method was generated by MyBatis Generator.
++         * This method corresponds to the database table litemall_stakeholders
++         *
++         * @mbg.generated
++         */
++        protected Criteria(LitemallStakeholdersExample example) {
++            super();
++            this.example = example;
++        }
++
++        /**
++         * This method was generated by MyBatis Generator.
++         * This method corresponds to the database table litemall_stakeholders
++         *
++         * @mbg.generated
++         */
++        public LitemallStakeholdersExample example() {
++            return this.example;
++        }
++
++        /**
++         * This method was generated by MyBatis Generator.
++         * This method corresponds to the database table litemall_stakeholders
++         *
++         * @mbg.generated
++         */
++        @Deprecated
++        public Criteria andIf(boolean ifAdd, ICriteriaAdd add) {
++            if (ifAdd) {
++                add.add(this);
++            }
++            return this;
++        }
++
++        /**
++         * This method was generated by MyBatis Generator.
++         * This method corresponds to the database table litemall_stakeholders
++         *
++         * @mbg.generated
++         */
++        public Criteria when(boolean condition, ICriteriaWhen then) {
++            if (condition) {
++                then.criteria(this);
++            }
++            return this;
++        }
++
++        /**
++         * This method was generated by MyBatis Generator.
++         * This method corresponds to the database table litemall_stakeholders
++         *
++         * @mbg.generated
++         */
++        public Criteria when(boolean condition, ICriteriaWhen then, ICriteriaWhen otherwise) {
++            if (condition) {
++                then.criteria(this);
++            } else {
++                otherwise.criteria(this);
++            }
++            return this;
++        }
++
++        @Deprecated
++        public interface ICriteriaAdd {
++            /**
++             * This method was generated by MyBatis Generator.
++             * This method corresponds to the database table litemall_stakeholders
++             *
++             * @mbg.generated
++             */
++            Criteria add(Criteria add);
++        }
++    }
++
++    /**
++     * This class was generated by MyBatis Generator.
++     * This class corresponds to the database table litemall_stakeholders
++     *
++     * @mbg.generated
++     */
++    public static class Criterion {
++        private String condition;
++
++        private Object value;
++
++        private Object secondValue;
++
++        private boolean noValue;
++
++        private boolean singleValue;
++
++        private boolean betweenValue;
++
++        private boolean listValue;
++
++        private String typeHandler;
++
++        public String getCondition() {
++            return condition;
++        }
++
++        public Object getValue() {
++            return value;
++        }
++
++        public Object getSecondValue() {
++            return secondValue;
++        }
++
++        public boolean isNoValue() {
++            return noValue;
++        }
++
++        public boolean isSingleValue() {
++            return singleValue;
++        }
++
++        public boolean isBetweenValue() {
++            return betweenValue;
++        }
++
++        public boolean isListValue() {
++            return listValue;
++        }
++
++        public String getTypeHandler() {
++            return typeHandler;
++        }
++
++        protected Criterion(String condition) {
++            super();
++            this.condition = condition;
++            this.typeHandler = null;
++            this.noValue = true;
++        }
++
++        protected Criterion(String condition, Object value, String typeHandler) {
++            super();
++            this.condition = condition;
++            this.value = value;
++            this.typeHandler = typeHandler;
++            if (value instanceof List<?>) {
++                this.listValue = true;
++            } else {
++                this.singleValue = true;
++            }
++        }
++
++        protected Criterion(String condition, Object value) {
++            this(condition, value, null);
++        }
++
++        protected Criterion(String condition, Object value, Object secondValue, String typeHandler) {
++            super();
++            this.condition = condition;
++            this.value = value;
++            this.secondValue = secondValue;
++            this.typeHandler = typeHandler;
++            this.betweenValue = true;
++        }
++
++        protected Criterion(String condition, Object value, Object secondValue) {
++            this(condition, value, secondValue, null);
++        }
++    }
++
++    public interface ICriteriaWhen {
++        /**
++         * This method was generated by MyBatis Generator.
++         * This method corresponds to the database table litemall_stakeholders
++         *
++         * @mbg.generated
++         */
++        void criteria(Criteria criteria);
++    }
++
++    public interface IExampleWhen {
++        /**
++         * This method was generated by MyBatis Generator.
++         * This method corresponds to the database table litemall_stakeholders
++         *
++         * @mbg.generated
++         */
++        void example(org.linlinjava.litemall.db.domain.LitemallStakeholdersExample example);
++    }
++}
+\ No newline at end of file
+diff --git a/litemall-db/src/main/java/org/linlinjava/litemall/db/service/LitemallAdminService.java b/litemall-db/src/main/java/org/linlinjava/litemall/db/service/LitemallAdminService.java
+index 1ce2f63d..195bbfe8 100644
+--- a/litemall-db/src/main/java/org/linlinjava/litemall/db/service/LitemallAdminService.java
++++ b/litemall-db/src/main/java/org/linlinjava/litemall/db/service/LitemallAdminService.java
+@@ -54,10 +54,10 @@ public class LitemallAdminService {
+         adminMapper.logicalDeleteByPrimaryKey(id);
+     }
+ 
+-    public void add(LitemallAdmin admin) {
++    public int add(LitemallAdmin admin) {
+         admin.setAddTime(LocalDateTime.now());
+         admin.setUpdateTime(LocalDateTime.now());
+-        adminMapper.insertSelective(admin);
++        return adminMapper.insertSelective(admin);
+     }
+ 
+     public LitemallAdmin findById(Integer id) {
+diff --git a/litemall-db/src/main/resources/org/linlinjava/litemall/db/dao/LitemallAdminMapper.xml b/litemall-db/src/main/resources/org/linlinjava/litemall/db/dao/LitemallAdminMapper.xml
+index c409467d..c11681cc 100644
+--- a/litemall-db/src/main/resources/org/linlinjava/litemall/db/dao/LitemallAdminMapper.xml
++++ b/litemall-db/src/main/resources/org/linlinjava/litemall/db/dao/LitemallAdminMapper.xml
+@@ -16,6 +16,9 @@
+     <result column="update_time" jdbcType="TIMESTAMP" property="updateTime" />
+     <result column="deleted" jdbcType="BIT" property="deleted" />
+     <result column="role_ids" jdbcType="VARCHAR" property="roleIds" typeHandler="org.linlinjava.litemall.db.mybatis.JsonIntegerArrayTypeHandler" />
++    <result column="tenant_id" jdbcType="VARCHAR" property="tenantId" />
++    <result column="user_id_in_tenant" jdbcType="INTEGER" property="userIdInTenant" />
++    <result column="mobile" jdbcType="VARCHAR" property="mobile" />
+   </resultMap>
+   <sql id="Example_Where_Clause">
+     <!--
+@@ -127,7 +130,7 @@
+       This element is automatically generated by MyBatis Generator, do not modify.
+     -->
+     id, username, `password`, last_login_ip, last_login_time, avatar, add_time, update_time, 
+-    deleted, role_ids
++    deleted, role_ids, tenant_id, user_id_in_tenant, mobile
+   </sql>
+   <select id="selectByExample" parameterType="org.linlinjava.litemall.db.domain.LitemallAdminExample" resultMap="BaseResultMap">
+     <!--
+@@ -250,11 +253,13 @@
+     </selectKey>
+     insert into litemall_admin (username, `password`, last_login_ip, 
+       last_login_time, avatar, add_time, 
+-      update_time, deleted, role_ids
++      update_time, deleted, role_ids, 
++      tenant_id, user_id_in_tenant, mobile
+       )
+     values (#{username,jdbcType=VARCHAR}, #{password,jdbcType=VARCHAR}, #{lastLoginIp,jdbcType=VARCHAR}, 
+       #{lastLoginTime,jdbcType=TIMESTAMP}, #{avatar,jdbcType=VARCHAR}, #{addTime,jdbcType=TIMESTAMP}, 
+-      #{updateTime,jdbcType=TIMESTAMP}, #{deleted,jdbcType=BIT}, #{roleIds,jdbcType=VARCHAR,typeHandler=org.linlinjava.litemall.db.mybatis.JsonIntegerArrayTypeHandler}
++      #{updateTime,jdbcType=TIMESTAMP}, #{deleted,jdbcType=BIT}, #{roleIds,jdbcType=VARCHAR,typeHandler=org.linlinjava.litemall.db.mybatis.JsonIntegerArrayTypeHandler}, 
++      #{tenantId,jdbcType=VARCHAR}, #{userIdInTenant,jdbcType=INTEGER}, #{mobile,jdbcType=VARCHAR}
+       )
+   </insert>
+   <insert id="insertSelective" parameterType="org.linlinjava.litemall.db.domain.LitemallAdmin">
+@@ -294,6 +299,15 @@
+       <if test="roleIds != null">
+         role_ids,
+       </if>
++      <if test="tenantId != null">
++        tenant_id,
++      </if>
++      <if test="userIdInTenant != null">
++        user_id_in_tenant,
++      </if>
++      <if test="mobile != null">
++        mobile,
++      </if>
+     </trim>
+     <trim prefix="values (" suffix=")" suffixOverrides=",">
+       <if test="username != null">
+@@ -323,6 +337,15 @@
+       <if test="roleIds != null">
+         #{roleIds,jdbcType=VARCHAR,typeHandler=org.linlinjava.litemall.db.mybatis.JsonIntegerArrayTypeHandler},
+       </if>
++      <if test="tenantId != null">
++        #{tenantId,jdbcType=VARCHAR},
++      </if>
++      <if test="userIdInTenant != null">
++        #{userIdInTenant,jdbcType=INTEGER},
++      </if>
++      <if test="mobile != null">
++        #{mobile,jdbcType=VARCHAR},
++      </if>
+     </trim>
+   </insert>
+   <select id="countByExample" parameterType="org.linlinjava.litemall.db.domain.LitemallAdminExample" resultType="java.lang.Long">
+@@ -372,6 +395,15 @@
+       <if test="record.roleIds != null">
+         role_ids = #{record.roleIds,jdbcType=VARCHAR,typeHandler=org.linlinjava.litemall.db.mybatis.JsonIntegerArrayTypeHandler},
+       </if>
++      <if test="record.tenantId != null">
++        tenant_id = #{record.tenantId,jdbcType=VARCHAR},
++      </if>
++      <if test="record.userIdInTenant != null">
++        user_id_in_tenant = #{record.userIdInTenant,jdbcType=INTEGER},
++      </if>
++      <if test="record.mobile != null">
++        mobile = #{record.mobile,jdbcType=VARCHAR},
++      </if>
+     </set>
+     <if test="_parameter != null">
+       <include refid="Update_By_Example_Where_Clause" />
+@@ -392,7 +424,10 @@
+       add_time = #{record.addTime,jdbcType=TIMESTAMP},
+       update_time = #{record.updateTime,jdbcType=TIMESTAMP},
+       deleted = #{record.deleted,jdbcType=BIT},
+-      role_ids = #{record.roleIds,jdbcType=VARCHAR,typeHandler=org.linlinjava.litemall.db.mybatis.JsonIntegerArrayTypeHandler}
++      role_ids = #{record.roleIds,jdbcType=VARCHAR,typeHandler=org.linlinjava.litemall.db.mybatis.JsonIntegerArrayTypeHandler},
++      tenant_id = #{record.tenantId,jdbcType=VARCHAR},
++      user_id_in_tenant = #{record.userIdInTenant,jdbcType=INTEGER},
++      mobile = #{record.mobile,jdbcType=VARCHAR}
+     <if test="_parameter != null">
+       <include refid="Update_By_Example_Where_Clause" />
+     </if>
+@@ -431,6 +466,15 @@
+       <if test="roleIds != null">
+         role_ids = #{roleIds,jdbcType=VARCHAR,typeHandler=org.linlinjava.litemall.db.mybatis.JsonIntegerArrayTypeHandler},
+       </if>
++      <if test="tenantId != null">
++        tenant_id = #{tenantId,jdbcType=VARCHAR},
++      </if>
++      <if test="userIdInTenant != null">
++        user_id_in_tenant = #{userIdInTenant,jdbcType=INTEGER},
++      </if>
++      <if test="mobile != null">
++        mobile = #{mobile,jdbcType=VARCHAR},
++      </if>
+     </set>
+     where id = #{id,jdbcType=INTEGER}
+   </update>
+@@ -448,7 +492,10 @@
+       add_time = #{addTime,jdbcType=TIMESTAMP},
+       update_time = #{updateTime,jdbcType=TIMESTAMP},
+       deleted = #{deleted,jdbcType=BIT},
+-      role_ids = #{roleIds,jdbcType=VARCHAR,typeHandler=org.linlinjava.litemall.db.mybatis.JsonIntegerArrayTypeHandler}
++      role_ids = #{roleIds,jdbcType=VARCHAR,typeHandler=org.linlinjava.litemall.db.mybatis.JsonIntegerArrayTypeHandler},
++      tenant_id = #{tenantId,jdbcType=VARCHAR},
++      user_id_in_tenant = #{userIdInTenant,jdbcType=INTEGER},
++      mobile = #{mobile,jdbcType=VARCHAR}
+     where id = #{id,jdbcType=INTEGER}
+   </update>
+   <select id="selectOneByExample" parameterType="org.linlinjava.litemall.db.domain.LitemallAdminExample" resultMap="BaseResultMap">
+diff --git a/litemall-db/src/main/resources/org/linlinjava/litemall/db/dao/LitemallStakeholdersMapper.xml b/litemall-db/src/main/resources/org/linlinjava/litemall/db/dao/LitemallStakeholdersMapper.xml
+new file mode 100644
+index 00000000..e9dd826f
+--- /dev/null
++++ b/litemall-db/src/main/resources/org/linlinjava/litemall/db/dao/LitemallStakeholdersMapper.xml
+@@ -0,0 +1,326 @@
++<?xml version="1.0" encoding="UTF-8"?>
++<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
++<mapper namespace="org.linlinjava.litemall.db.dao.LitemallStakeholdersMapper">
++  <resultMap id="BaseResultMap" type="org.linlinjava.litemall.db.domain.LitemallStakeholders">
++    <!--
++      WARNING - @mbg.generated
++      This element is automatically generated by MyBatis Generator, do not modify.
++    -->
++    <id column="id" jdbcType="INTEGER" property="id" />
++    <result column="name" jdbcType="VARCHAR" property="name" />
++    <result column="sex" jdbcType="VARCHAR" property="sex" />
++  </resultMap>
++  <sql id="Example_Where_Clause">
++    <!--
++      WARNING - @mbg.generated
++      This element is automatically generated by MyBatis Generator, do not modify.
++    -->
++    <where>
++      <foreach collection="oredCriteria" item="criteria" separator="or">
++        <if test="criteria.valid">
++          <trim prefix="(" prefixOverrides="and" suffix=")">
++            <foreach collection="criteria.criteria" item="criterion">
++              <choose>
++                <when test="criterion.noValue">
++                  and ${criterion.condition}
++                </when>
++                <when test="criterion.singleValue">
++                  and ${criterion.condition} #{criterion.value}
++                </when>
++                <when test="criterion.betweenValue">
++                  and ${criterion.condition} #{criterion.value} and #{criterion.secondValue}
++                </when>
++                <when test="criterion.listValue">
++                  and ${criterion.condition}
++                  <foreach close=")" collection="criterion.value" item="listItem" open="(" separator=",">
++                    #{listItem}
++                  </foreach>
++                </when>
++              </choose>
++            </foreach>
++          </trim>
++        </if>
++      </foreach>
++    </where>
++  </sql>
++  <sql id="Update_By_Example_Where_Clause">
++    <!--
++      WARNING - @mbg.generated
++      This element is automatically generated by MyBatis Generator, do not modify.
++    -->
++    <where>
++      <foreach collection="example.oredCriteria" item="criteria" separator="or">
++        <if test="criteria.valid">
++          <trim prefix="(" prefixOverrides="and" suffix=")">
++            <foreach collection="criteria.criteria" item="criterion">
++              <choose>
++                <when test="criterion.noValue">
++                  and ${criterion.condition}
++                </when>
++                <when test="criterion.singleValue">
++                  and ${criterion.condition} #{criterion.value}
++                </when>
++                <when test="criterion.betweenValue">
++                  and ${criterion.condition} #{criterion.value} and #{criterion.secondValue}
++                </when>
++                <when test="criterion.listValue">
++                  and ${criterion.condition}
++                  <foreach close=")" collection="criterion.value" item="listItem" open="(" separator=",">
++                    #{listItem}
++                  </foreach>
++                </when>
++              </choose>
++            </foreach>
++          </trim>
++        </if>
++      </foreach>
++    </where>
++  </sql>
++  <sql id="Base_Column_List">
++    <!--
++      WARNING - @mbg.generated
++      This element is automatically generated by MyBatis Generator, do not modify.
++    -->
++    id, `name`, sex
++  </sql>
++  <select id="selectByExample" parameterType="org.linlinjava.litemall.db.domain.LitemallStakeholdersExample" resultMap="BaseResultMap">
++    <!--
++      WARNING - @mbg.generated
++      This element is automatically generated by MyBatis Generator, do not modify.
++    -->
++    select
++    <if test="distinct">
++      distinct
++    </if>
++    <include refid="Base_Column_List" />
++    from litemall_stakeholders
++    <if test="_parameter != null">
++      <include refid="Example_Where_Clause" />
++    </if>
++    <if test="orderByClause != null">
++      order by ${orderByClause}
++    </if>
++  </select>
++  <select id="selectByExampleSelective" parameterType="map" resultMap="BaseResultMap">
++    <!--
++      WARNING - @mbg.generated
++      This element is automatically generated by MyBatis Generator, do not modify.
++    -->
++    select
++    <if test="example.distinct">
++      distinct
++    </if>
++    <choose>
++      <when test="selective != null and selective.length &gt; 0">
++        <foreach collection="selective" item="column" separator=",">
++          ${column.aliasedEscapedColumnName}
++        </foreach>
++      </when>
++      <otherwise>
++        <include refid="Base_Column_List" />
++      </otherwise>
++    </choose>
++    from litemall_stakeholders
++    <if test="_parameter != null">
++      <include refid="Update_By_Example_Where_Clause" />
++    </if>
++    <if test="example.orderByClause != null">
++      order by ${example.orderByClause}
++    </if>
++  </select>
++  <select id="selectByPrimaryKey" parameterType="java.lang.Integer" resultMap="BaseResultMap">
++    <!--
++      WARNING - @mbg.generated
++      This element is automatically generated by MyBatis Generator, do not modify.
++    -->
++    select 
++    <include refid="Base_Column_List" />
++    from litemall_stakeholders
++    where id = #{id,jdbcType=INTEGER}
++  </select>
++  <select id="selectByPrimaryKeySelective" parameterType="map" resultMap="BaseResultMap">
++    <!--
++      WARNING - @mbg.generated
++      This element is automatically generated by MyBatis Generator, do not modify.
++    -->
++    select
++    <choose>
++      <when test="selective != null and selective.length &gt; 0">
++        <foreach collection="selective" item="column" separator=",">
++          ${column.aliasedEscapedColumnName}
++        </foreach>
++      </when>
++      <otherwise>
++        <include refid="Base_Column_List" />
++      </otherwise>
++    </choose>
++    from litemall_stakeholders
++    where id = #{id,jdbcType=INTEGER}
++  </select>
++  <delete id="deleteByPrimaryKey" parameterType="java.lang.Integer">
++    <!--
++      WARNING - @mbg.generated
++      This element is automatically generated by MyBatis Generator, do not modify.
++    -->
++    delete from litemall_stakeholders
++    where id = #{id,jdbcType=INTEGER}
++  </delete>
++  <delete id="deleteByExample" parameterType="org.linlinjava.litemall.db.domain.LitemallStakeholdersExample">
++    <!--
++      WARNING - @mbg.generated
++      This element is automatically generated by MyBatis Generator, do not modify.
++    -->
++    delete from litemall_stakeholders
++    <if test="_parameter != null">
++      <include refid="Example_Where_Clause" />
++    </if>
++  </delete>
++  <insert id="insert" parameterType="org.linlinjava.litemall.db.domain.LitemallStakeholders">
++    <!--
++      WARNING - @mbg.generated
++      This element is automatically generated by MyBatis Generator, do not modify.
++    -->
++    <selectKey keyProperty="id" order="AFTER" resultType="java.lang.Integer">
++      SELECT LAST_INSERT_ID()
++    </selectKey>
++    insert into litemall_stakeholders (`name`, sex)
++    values (#{name,jdbcType=VARCHAR}, #{sex,jdbcType=VARCHAR})
++  </insert>
++  <insert id="insertSelective" parameterType="org.linlinjava.litemall.db.domain.LitemallStakeholders">
++    <!--
++      WARNING - @mbg.generated
++      This element is automatically generated by MyBatis Generator, do not modify.
++    -->
++    <selectKey keyProperty="id" order="AFTER" resultType="java.lang.Integer">
++      SELECT LAST_INSERT_ID()
++    </selectKey>
++    insert into litemall_stakeholders
++    <trim prefix="(" suffix=")" suffixOverrides=",">
++      <if test="name != null">
++        `name`,
++      </if>
++      <if test="sex != null">
++        sex,
++      </if>
++    </trim>
++    <trim prefix="values (" suffix=")" suffixOverrides=",">
++      <if test="name != null">
++        #{name,jdbcType=VARCHAR},
++      </if>
++      <if test="sex != null">
++        #{sex,jdbcType=VARCHAR},
++      </if>
++    </trim>
++  </insert>
++  <select id="countByExample" parameterType="org.linlinjava.litemall.db.domain.LitemallStakeholdersExample" resultType="java.lang.Long">
++    <!--
++      WARNING - @mbg.generated
++      This element is automatically generated by MyBatis Generator, do not modify.
++    -->
++    select count(*) from litemall_stakeholders
++    <if test="_parameter != null">
++      <include refid="Example_Where_Clause" />
++    </if>
++  </select>
++  <update id="updateByExampleSelective" parameterType="map">
++    <!--
++      WARNING - @mbg.generated
++      This element is automatically generated by MyBatis Generator, do not modify.
++    -->
++    update litemall_stakeholders
++    <set>
++      <if test="record.id != null">
++        id = #{record.id,jdbcType=INTEGER},
++      </if>
++      <if test="record.name != null">
++        `name` = #{record.name,jdbcType=VARCHAR},
++      </if>
++      <if test="record.sex != null">
++        sex = #{record.sex,jdbcType=VARCHAR},
++      </if>
++    </set>
++    <if test="_parameter != null">
++      <include refid="Update_By_Example_Where_Clause" />
++    </if>
++  </update>
++  <update id="updateByExample" parameterType="map">
++    <!--
++      WARNING - @mbg.generated
++      This element is automatically generated by MyBatis Generator, do not modify.
++    -->
++    update litemall_stakeholders
++    set id = #{record.id,jdbcType=INTEGER},
++      `name` = #{record.name,jdbcType=VARCHAR},
++      sex = #{record.sex,jdbcType=VARCHAR}
++    <if test="_parameter != null">
++      <include refid="Update_By_Example_Where_Clause" />
++    </if>
++  </update>
++  <update id="updateByPrimaryKeySelective" parameterType="org.linlinjava.litemall.db.domain.LitemallStakeholders">
++    <!--
++      WARNING - @mbg.generated
++      This element is automatically generated by MyBatis Generator, do not modify.
++    -->
++    update litemall_stakeholders
++    <set>
++      <if test="name != null">
++        `name` = #{name,jdbcType=VARCHAR},
++      </if>
++      <if test="sex != null">
++        sex = #{sex,jdbcType=VARCHAR},
++      </if>
++    </set>
++    where id = #{id,jdbcType=INTEGER}
++  </update>
++  <update id="updateByPrimaryKey" parameterType="org.linlinjava.litemall.db.domain.LitemallStakeholders">
++    <!--
++      WARNING - @mbg.generated
++      This element is automatically generated by MyBatis Generator, do not modify.
++    -->
++    update litemall_stakeholders
++    set `name` = #{name,jdbcType=VARCHAR},
++      sex = #{sex,jdbcType=VARCHAR}
++    where id = #{id,jdbcType=INTEGER}
++  </update>
++  <select id="selectOneByExample" parameterType="org.linlinjava.litemall.db.domain.LitemallStakeholdersExample" resultMap="BaseResultMap">
++    <!--
++      WARNING - @mbg.generated
++      This element is automatically generated by MyBatis Generator, do not modify.
++    -->
++    select
++    <include refid="Base_Column_List" />
++    from litemall_stakeholders
++    <if test="_parameter != null">
++      <include refid="Example_Where_Clause" />
++    </if>
++    <if test="orderByClause != null">
++      order by ${orderByClause}
++    </if>
++    limit 1
++  </select>
++  <select id="selectOneByExampleSelective" parameterType="map" resultMap="BaseResultMap">
++    <!--
++      WARNING - @mbg.generated
++      This element is automatically generated by MyBatis Generator, do not modify.
++    -->
++    select
++    <choose>
++      <when test="selective != null and selective.length &gt; 0">
++        <foreach collection="selective" item="column" separator=",">
++          ${column.aliasedEscapedColumnName}
++        </foreach>
++      </when>
++      <otherwise>
++        <include refid="Base_Column_List" />
++      </otherwise>
++    </choose>
++    from litemall_stakeholders
++    <if test="_parameter != null">
++      <include refid="Update_By_Example_Where_Clause" />
++    </if>
++    <if test="example.orderByClause != null">
++      order by ${example.orderByClause}
++    </if>
++    limit 1
++  </select>
++</mapper>
+\ No newline at end of file
+diff --git a/litemall-wx-api/src/main/java/org/linlinjava/litemall/wx/web/WxIndexController.java b/litemall-wx-api/src/main/java/org/linlinjava/litemall/wx/web/WxIndexController.java
+index aa90ab78..e8bd4f9f 100644
+--- a/litemall-wx-api/src/main/java/org/linlinjava/litemall/wx/web/WxIndexController.java
++++ b/litemall-wx-api/src/main/java/org/linlinjava/litemall/wx/web/WxIndexController.java
+@@ -2,7 +2,9 @@ package org.linlinjava.litemall.wx.web;
+ 
+ import org.apache.commons.logging.Log;
+ import org.apache.commons.logging.LogFactory;
++import org.linlinjava.litemall.core.config.MiscProperties;
+ import org.linlinjava.litemall.core.util.ResponseUtil;
++import org.springframework.beans.factory.annotation.Autowired;
+ import org.springframework.web.bind.annotation.GetMapping;
+ import org.springframework.web.bind.annotation.RequestMapping;
+ import org.springframework.web.bind.annotation.RestController;
+@@ -15,6 +17,9 @@ import org.springframework.web.bind.annotation.RestController;
+ public class WxIndexController {
+     private final Log logger = LogFactory.getLog(WxIndexController.class);
+ 
++    @Autowired
++    MiscProperties miscProperties;
++
+     /**
+      * 测试数据
+      *
+@@ -22,6 +27,7 @@ public class WxIndexController {
+      */
+     @GetMapping("/index")
+     public Object index() {
++        System.out.println(miscProperties.getItselfUrl());
+         return ResponseUtil.ok("hello world, this is wx service");
+     }
+ 
+diff --git a/study.txt b/study.txt
+new file mode 100644
+index 00000000..95fdee08
+--- /dev/null
++++ b/study.txt
+@@ -0,0 +1,58 @@
++application-db.yml 中的数据库连接信息
++generatorConfix.xml中的45行数据库连接信息
++
++----------------
++1. 新增表 litemall_stakeholders 权益人
++2. 在generatorConfig里增加 litemall_stakeholders
++        <table tableName="litemall_stakeholders">
++            <generatedKey column="id" sqlStatement="MySql" identity="true"/>
++        </table>
++
++3.
++运行litemall-db里pom， mybatis-generator:generate, 之后再litemall-db里
++会创建一些文件。
++
++-------------多租户-----------
++a。主库只存放用户
++b。 
++需要排除 exclude = DataSourceAutoConfiguration.class
++@SpringBootApplication(scanBasePackages = {"org.linlinjava.litemall"}, exclude = DataSourceAutoConfiguration.class)
++
++----litemall_admin表有发生变化，变化的语句是：
++待拷贝
++
++4. litemall-db里的application-db.yml中增加：
++  main:
++    allow-bean-definition-overriding: true
++	
++	
++5.litemall-admin里的 .env.development等文件中包含了API的地址	
++  5a.部署的时候需要nginx反向代理,
++
++5b. 开发环境的时候， 需要把
++.env.development里的更改如下
++# base api
++#VUE_APP_BASE_API = 'http://localhost:8080/admin'
++VUE_APP_BASE_API = 'admin'
++
++同时在的vue.config里
++  devServer: {
++    port: port,
++    open: true,
++	proxy:{
++	'/admin':{
++		target: 'http://localhost:8080',//代理地址，这里设置的地址会代替axios中设置的baseURL
++		changeOrigin: true,// 如果接口跨域，需要进行这个参数配置
++		//ws: true, // proxy websockets
++		//pathRewrite方法重写url
++		pathRewrite: {
++			'^/admin': '/admin' 
++			//pathRewrite: {'^/api': '/'} 重写之后url为 http://192.168.1.16:8085/xxxx
++			//pathRewrite: {'^/api': '/api'} 重写之后url为 http://192.168.1.16:8085/api/xxxx
++	   }
++    }},
++    overlay: {
++      warnings: false,
++      errors: true
++    }
++  },
+\ No newline at end of file
+-- 
+2.20.1.windows.1
+
