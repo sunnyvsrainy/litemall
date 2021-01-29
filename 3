@@ -1,0 +1,754 @@
+From 171c2aa539f826aee03e416373452520096c7f3f Mon Sep 17 00:00:00 2001
+From: peter <peter.shang@nodus.com>
+Date: Mon, 18 Jan 2021 11:41:40 +0800
+Subject: [PATCH 3/3] =?UTF-8?q?=E6=8A=80=E6=9C=AF=E5=AE=9E=E9=AA=8C?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+---
+ .../litemall/admin/config/ShiroConfig.java    |   2 +
+ .../admin/service/AdminOrderService.java      |   7 +-
+ .../admin/web/AdminAdminController.java       |  64 +++++++---
+ .../admin/web/AdminAftersaleController.java   |  10 +-
+ .../litemall/core/config/MiscProperties.java  |  27 +++++
+ .../core/config/PeterWeiXinHelper.java        | 109 ++++++++++++++++++
+ .../litemall/core/config/WxConfig.java        |  12 +-
+ .../litemall/core/config/WxProperties.java    |   4 +-
+ .../datasource/MultiTenantConstants.java      |   6 +
+ .../datasource/MultitenantConfiguration.java  |  10 +-
+ .../litemall/core/qcode/QCodeService.java     |   9 +-
+ .../core/system/SystemInistService.java       |   1 +
+ .../src/main/resources/application-core.yml   |  14 ++-
+ .../src/main/resources/application-db.yml     |   4 +-
+ .../litemall/wx/service/WxOrderService.java   |  12 +-
+ .../litemall/wx/web/WxAuthController.java     |  13 +--
+ study.txt                                     |   3 +
+ 17 files changed, 247 insertions(+), 60 deletions(-)
+ create mode 100644 litemall-core/src/main/java/org/linlinjava/litemall/core/config/PeterWeiXinHelper.java
+
+diff --git a/litemall-admin-api/src/main/java/org/linlinjava/litemall/admin/config/ShiroConfig.java b/litemall-admin-api/src/main/java/org/linlinjava/litemall/admin/config/ShiroConfig.java
+index 9ef972f5..edd4e223 100644
+--- a/litemall-admin-api/src/main/java/org/linlinjava/litemall/admin/config/ShiroConfig.java
++++ b/litemall-admin-api/src/main/java/org/linlinjava/litemall/admin/config/ShiroConfig.java
+@@ -34,8 +34,10 @@ public class ShiroConfig {
+         filterChainDefinitionMap.put("/admin/auth/401", "anon");
+         filterChainDefinitionMap.put("/admin/auth/index", "anon");
+         filterChainDefinitionMap.put("/admin/auth/403", "anon");
++        filterChainDefinitionMap.put("/admin/admin/create4master", "anon");
+         filterChainDefinitionMap.put("/admin/index/*", "anon");
+ 
++
+         filterChainDefinitionMap.put("/admin/**", "authc");
+         shiroFilterFactoryBean.setLoginUrl("/admin/auth/401");
+         shiroFilterFactoryBean.setSuccessUrl("/admin/auth/index");
+diff --git a/litemall-admin-api/src/main/java/org/linlinjava/litemall/admin/service/AdminOrderService.java b/litemall-admin-api/src/main/java/org/linlinjava/litemall/admin/service/AdminOrderService.java
+index b0518473..c238fa75 100644
+--- a/litemall-admin-api/src/main/java/org/linlinjava/litemall/admin/service/AdminOrderService.java
++++ b/litemall-admin-api/src/main/java/org/linlinjava/litemall/admin/service/AdminOrderService.java
+@@ -7,6 +7,7 @@ import com.github.binarywang.wxpay.exception.WxPayException;
+ import com.github.binarywang.wxpay.service.WxPayService;
+ import org.apache.commons.logging.Log;
+ import org.apache.commons.logging.LogFactory;
++import org.linlinjava.litemall.core.config.PeterWeiXinHelper;
+ import org.linlinjava.litemall.core.notify.NotifyService;
+ import org.linlinjava.litemall.core.notify.NotifyType;
+ import org.linlinjava.litemall.core.util.DateTimeUtil;
+@@ -46,8 +47,8 @@ public class AdminOrderService {
+     private LitemallUserService userService;
+     @Autowired
+     private LitemallCommentService commentService;
+-    @Autowired
+-    private WxPayService wxPayService;
++//    @Autowired
++//    private WxPayService wxPayService;
+     @Autowired
+     private NotifyService notifyService;
+     @Autowired
+@@ -125,7 +126,7 @@ public class AdminOrderService {
+ 
+         WxPayRefundResult wxPayRefundResult;
+         try {
+-            wxPayRefundResult = wxPayService.refund(wxPayRefundRequest);
++            wxPayRefundResult = PeterWeiXinHelper.getWxPayService().refund(wxPayRefundRequest);
+         } catch (WxPayException e) {
+             logger.error(e.getMessage(), e);
+             return ResponseUtil.fail(ORDER_REFUND_FAILED, "订单退款失败");
+diff --git a/litemall-admin-api/src/main/java/org/linlinjava/litemall/admin/web/AdminAdminController.java b/litemall-admin-api/src/main/java/org/linlinjava/litemall/admin/web/AdminAdminController.java
+index f58dd524..d533d545 100644
+--- a/litemall-admin-api/src/main/java/org/linlinjava/litemall/admin/web/AdminAdminController.java
++++ b/litemall-admin-api/src/main/java/org/linlinjava/litemall/admin/web/AdminAdminController.java
+@@ -8,6 +8,15 @@ import okhttp3.Request;
+ import okhttp3.Response;
+ import org.apache.commons.logging.Log;
+ import org.apache.commons.logging.LogFactory;
++import org.apache.http.Header;
++import org.apache.http.HttpResponse;
++import org.apache.http.client.methods.HttpHead;
++import org.apache.http.client.methods.HttpPost;
++import org.apache.http.entity.StringEntity;
++import org.apache.http.impl.client.CloseableHttpClient;
++import org.apache.http.impl.client.HttpClients;
++import org.apache.http.message.BasicHeader;
++import org.apache.http.util.EntityUtils;
+ import org.apache.shiro.SecurityUtils;
+ import org.apache.shiro.authz.annotation.RequiresPermissions;
+ import org.apache.shiro.subject.Subject;
+@@ -30,6 +39,7 @@ import org.springframework.web.bind.annotation.*;
+ 
+ import javax.validation.constraints.NotNull;
+ import java.io.IOException;
++import java.nio.charset.StandardCharsets;
+ import java.util.List;
+ 
+ import static org.linlinjava.litemall.admin.util.AdminResponseCode.*;
+@@ -62,8 +72,8 @@ public class AdminAdminController {
+         if (StringUtils.isEmpty(name)) {
+             return ResponseUtil.badArgument();
+         }
+-        if (!RegexUtil.isUsername(name)) {
+-            return ResponseUtil.fail(ADMIN_INVALID_NAME, "管理员名称不符合规定");
++        if (!RegexUtil.isMobileExact(name)) {
++            return ResponseUtil.fail(ADMIN_INVALID_NAME, "请用合法的手机号码作为用户名");
+         }
+         String password = admin.getPassword();
+         if (StringUtils.isEmpty(password) || password.length() < 6) {
+@@ -97,10 +107,12 @@ public class AdminAdminController {
+         String tenant = TenantContext.getCurrentTenant();
+         admin.setTenantId(tenant);
+         admin.setMobile(username);
+-        admin.setUserIdInTenant(userId);
++        admin.setUserIdInTenant(admin.getId());
+ 
+         //同步调用在主库也创建一笔。
+-        post2Master("/masterdb/create", admin);
++        admin.setAddTime(null);
++        admin.setUpdateTime(null);
++        post2Master( admin);
+         return ResponseUtil.ok(admin);
+     }
+ 
+@@ -108,21 +120,36 @@ public class AdminAdminController {
+     @Autowired
+     MiscProperties miscProperties;
+ 
+-    private void post2Master(String url, Object rawObject) {
++    private void post2Master(Object rawObject) {
++
++        String url = miscProperties.getMasterUserCreate();
+ 
+-        url = miscProperties.getItselfUrl() + url;
+-        OkHttpClient client = new OkHttpClient();
+         ObjectMapper objectMapper = new ObjectMapper();
+         String json = null;
+         try {
+             json = objectMapper.writeValueAsString(rawObject);
+-            okhttp3.RequestBody body = okhttp3.RequestBody.create(MediaType.get("application/json; charset=utf-8"), json);
+-            Request request = new Request.Builder()
+-                    .url(url)
+-                    .addHeader(MultiTenantConstants.TENANT_KEY, MultiTenantConstants.DEFAULT_TENANT_ID)
+-                    .post(body)
+-                    .build();
+-            Response response = client.newCall(request).execute() ;
++
++            CloseableHttpClient httpClient = HttpClients.createDefault();
++
++            HttpPost post = new HttpPost(url);
++            Header header = new BasicHeader("Content-Type", "application/json");
++
++            post.setHeader(header);
++            StringEntity entity = new StringEntity(json, StandardCharsets.UTF_8);
++            post.setEntity(entity);
++            entity.setContentType(header);
++
++            HttpResponse response = httpClient.execute(post);
++
++            int statusCode = response.getStatusLine().getStatusCode();
++            if (statusCode != 200) {
++                throw new RuntimeException("http请求异常" + statusCode);
++            }
++
++            String result = EntityUtils.toString(response.getEntity(), "UTF-8");
++
++            System.out.println(result);
++
+         } catch (JsonProcessingException e) {
+             e.printStackTrace();
+         } catch (IOException e) {
+@@ -134,9 +161,11 @@ public class AdminAdminController {
+ 
+     }
+ 
+-    @PostMapping("/masterdb/create")
++    @PostMapping("/create4master")
+     public Object createOnMasterDb(@RequestBody LitemallAdmin admin) {
+-        //TODO 制只能从通过http从本地调用
++        System.out.println("******************");
++        System.out.println(TenantContext.getCurrentTenant());
++        //TODO 制只能从通过http从本地调用，检查localhost或者127。0.0.1
+         Object error = validate(admin);
+         if (error != null) {
+             return error;
+@@ -153,8 +182,7 @@ public class AdminAdminController {
+         String encodedPassword = encoder.encode(rawPassword);
+         admin.setPassword(encodedPassword);
+         adminService.add(admin);
+-        logHelper.logAuthSucceed("添加管理员", username);
+-        return ResponseUtil.ok(admin);
++        logHelper.logAuthSucceed("添加管理员", username);        return ResponseUtil.ok(admin);
+     }
+ 
+ 
+diff --git a/litemall-admin-api/src/main/java/org/linlinjava/litemall/admin/web/AdminAftersaleController.java b/litemall-admin-api/src/main/java/org/linlinjava/litemall/admin/web/AdminAftersaleController.java
+index 55877548..4f8f6162 100644
+--- a/litemall-admin-api/src/main/java/org/linlinjava/litemall/admin/web/AdminAftersaleController.java
++++ b/litemall-admin-api/src/main/java/org/linlinjava/litemall/admin/web/AdminAftersaleController.java
+@@ -3,13 +3,13 @@ package org.linlinjava.litemall.admin.web;
+ import com.github.binarywang.wxpay.bean.request.WxPayRefundRequest;
+ import com.github.binarywang.wxpay.bean.result.WxPayRefundResult;
+ import com.github.binarywang.wxpay.exception.WxPayException;
+-import com.github.binarywang.wxpay.service.WxPayService;
+ import org.apache.commons.logging.Log;
+ import org.apache.commons.logging.LogFactory;
+ import org.apache.shiro.authz.annotation.RequiresPermissions;
+ import org.linlinjava.litemall.admin.annotation.RequiresPermissionsDesc;
+ import org.linlinjava.litemall.admin.service.LogHelper;
+ import org.linlinjava.litemall.admin.util.AdminResponseCode;
++import org.linlinjava.litemall.core.config.PeterWeiXinHelper;
+ import org.linlinjava.litemall.core.notify.NotifyService;
+ import org.linlinjava.litemall.core.notify.NotifyType;
+ import org.linlinjava.litemall.core.util.JacksonUtil;
+@@ -17,12 +17,10 @@ import org.linlinjava.litemall.core.util.ResponseUtil;
+ import org.linlinjava.litemall.core.validator.Order;
+ import org.linlinjava.litemall.core.validator.Sort;
+ import org.linlinjava.litemall.db.domain.LitemallAftersale;
+-import org.linlinjava.litemall.db.domain.LitemallGoodsProduct;
+ import org.linlinjava.litemall.db.domain.LitemallOrder;
+ import org.linlinjava.litemall.db.domain.LitemallOrderGoods;
+ import org.linlinjava.litemall.db.service.*;
+ import org.linlinjava.litemall.db.util.AftersaleConstant;
+-import org.linlinjava.litemall.db.util.OrderUtil;
+ import org.springframework.beans.factory.annotation.Autowired;
+ import org.springframework.validation.annotation.Validated;
+ import org.springframework.web.bind.annotation.*;
+@@ -49,8 +47,8 @@ public class AdminAftersaleController {
+     private LitemallGoodsProductService goodsProductService;
+     @Autowired
+     private LogHelper logHelper;
+-    @Autowired
+-    private WxPayService wxPayService;
++//    @Autowired
++//    private WxPayService wxPayService;
+     @Autowired
+     private NotifyService notifyService;
+ 
+@@ -188,7 +186,7 @@ public class AdminAftersaleController {
+ 
+         WxPayRefundResult wxPayRefundResult;
+         try {
+-            wxPayRefundResult = wxPayService.refund(wxPayRefundRequest);
++            wxPayRefundResult = PeterWeiXinHelper.getWxPayService().refund(wxPayRefundRequest);
+         } catch (WxPayException e) {
+             logger.error(e.getMessage(), e);
+             return ResponseUtil.fail(ORDER_REFUND_FAILED, "订单退款失败");
+diff --git a/litemall-core/src/main/java/org/linlinjava/litemall/core/config/MiscProperties.java b/litemall-core/src/main/java/org/linlinjava/litemall/core/config/MiscProperties.java
+index 2af3788f..583a61b2 100644
+--- a/litemall-core/src/main/java/org/linlinjava/litemall/core/config/MiscProperties.java
++++ b/litemall-core/src/main/java/org/linlinjava/litemall/core/config/MiscProperties.java
+@@ -10,11 +10,38 @@ import org.springframework.context.annotation.Configuration;
+ @ConfigurationProperties(prefix = "peter.misc")
+ public class MiscProperties {
+     private String itselfUrl;
++    private String masterUserCreate;
++    private String masterUserUpdate;
++    private String masterUserDelete;
+ 
+     public String getItselfUrl() {
+         return itselfUrl;
+     }
+ 
++    public String getMasterUserCreate() {
++        return masterUserCreate;
++    }
++
++    public void setMasterUserCreate(String masterUserCreate) {
++        this.masterUserCreate = masterUserCreate;
++    }
++
++    public String getMasterUserUpdate() {
++        return masterUserUpdate;
++    }
++
++    public void setMasterUserUpdate(String masterUserUpdate) {
++        this.masterUserUpdate = masterUserUpdate;
++    }
++
++    public String getMasterUserDelete() {
++        return masterUserDelete;
++    }
++
++    public void setMasterUserDelete(String masterUserDelete) {
++        this.masterUserDelete = masterUserDelete;
++    }
++
+     public void setItselfUrl(String itselfUrl) {
+         this.itselfUrl = itselfUrl;
+     }
+diff --git a/litemall-core/src/main/java/org/linlinjava/litemall/core/config/PeterWeiXinHelper.java b/litemall-core/src/main/java/org/linlinjava/litemall/core/config/PeterWeiXinHelper.java
+new file mode 100644
+index 00000000..6602d7f1
+--- /dev/null
++++ b/litemall-core/src/main/java/org/linlinjava/litemall/core/config/PeterWeiXinHelper.java
+@@ -0,0 +1,109 @@
++package org.linlinjava.litemall.core.config;
++
++import cn.binarywang.wx.miniapp.api.WxMaService;
++import cn.binarywang.wx.miniapp.api.impl.WxMaServiceImpl;
++import cn.binarywang.wx.miniapp.config.WxMaInMemoryConfig;
++import com.github.binarywang.wxpay.config.WxPayConfig;
++import com.github.binarywang.wxpay.service.WxPayService;
++import com.github.binarywang.wxpay.service.impl.WxPayServiceImpl;
++import org.linlinjava.litemall.core.config.datasource.MultiTenantConstants;
++import org.linlinjava.litemall.core.config.datasource.TenantContext;
++import org.springframework.beans.factory.annotation.Autowired;
++import org.springframework.beans.factory.annotation.Qualifier;
++import org.springframework.boot.context.properties.ConfigurationProperties;
++import org.springframework.context.annotation.Bean;
++import org.springframework.context.annotation.Configuration;
++import org.springframework.context.annotation.Primary;
++
++import javax.annotation.PostConstruct;
++import java.util.HashMap;
++import java.util.Map;
++
++
++@Configuration
++public class PeterWeiXinHelper {
++
++    private static Map<String, WxMaService> mapWxMaService = new HashMap<>();
++    private static Map<String, WxPayService> mapWxPayService = new HashMap<>();
++
++
++    public static WxMaService getWxMaService() {
++        String tenant = TenantContext.getCurrentTenant();
++        return mapWxMaService.get(tenant);
++    }
++
++    public static WxPayService getWxPayService(){
++        String tenant = TenantContext.getCurrentTenant();
++        return mapWxPayService.get(tenant);
++    }
++
++    @Bean(name = "wxProperties1")
++    @Primary
++    @ConfigurationProperties(prefix = "litemall.wx1")
++    public WxProperties wxProperties1(){
++        return new WxProperties();
++    }
++    @Autowired
++    @Qualifier("wxProperties1")
++    WxProperties properties1;
++
++
++    @Bean(name = "wxProperties2")
++    @ConfigurationProperties(prefix = "litemall.wx2")
++    public WxProperties wxProperties2(){
++        return new WxProperties();
++    }
++    @Autowired
++    @Qualifier("wxProperties2")
++    WxProperties properties2;
++
++
++    @PostConstruct
++    private void initMultiWx( ){
++        WxMaInMemoryConfig maConfig1 = new WxMaInMemoryConfig();
++        maConfig1.setAppid(properties1.getAppId());
++        maConfig1.setSecret(properties1.getAppSecret());
++        WxMaService service1 = new WxMaServiceImpl();
++        service1.setWxMaConfig(maConfig1);
++        mapWxMaService.put(MultiTenantConstants.TENANT_KEY1, service1);
++
++
++        WxMaInMemoryConfig maConfig2 = new WxMaInMemoryConfig();
++        maConfig2.setAppid(properties2.getAppId());
++        maConfig2.setSecret(properties2.getAppSecret());
++        WxMaService service2 = new WxMaServiceImpl();
++        service2.setWxMaConfig(maConfig2);
++        mapWxMaService.put(MultiTenantConstants.TENANT_KEY2, service2);
++
++        //////////////////////////////////////////////////////////////////////////////
++        WxPayConfig payConfig1 = new WxPayConfig();
++        payConfig1.setAppId(properties1.getAppId());
++        payConfig1.setMchId(properties1.getMchId());
++        payConfig1.setMchKey(properties1.getMchKey());
++        payConfig1.setNotifyUrl(properties1.getNotifyUrl());
++        payConfig1.setKeyPath(properties1.getKeyPath());
++        payConfig1.setTradeType("JSAPI");
++        payConfig1.setSignType("MD5");
++        WxPayService wxPayService1 = new WxPayServiceImpl();
++        wxPayService1.setConfig(payConfig1);
++        mapWxPayService.put(MultiTenantConstants.TENANT_KEY1,wxPayService1);
++
++        WxPayConfig payConfig2 = new WxPayConfig();
++        payConfig2.setAppId(properties2.getAppId());
++        payConfig2.setMchId(properties2.getMchId());
++        payConfig2.setMchKey(properties2.getMchKey());
++        payConfig2.setNotifyUrl(properties2.getNotifyUrl());
++        payConfig2.setKeyPath(properties2.getKeyPath());
++        payConfig2.setTradeType("JSAPI");
++        payConfig2.setSignType("MD5");
++        WxPayService wxPayService2 = new WxPayServiceImpl();
++        wxPayService2.setConfig(payConfig2);
++        mapWxPayService.put(MultiTenantConstants.TENANT_KEY2,wxPayService2);
++
++
++    }
++
++
++
++
++}
+diff --git a/litemall-core/src/main/java/org/linlinjava/litemall/core/config/WxConfig.java b/litemall-core/src/main/java/org/linlinjava/litemall/core/config/WxConfig.java
+index f84fba46..5d0fc9b0 100644
+--- a/litemall-core/src/main/java/org/linlinjava/litemall/core/config/WxConfig.java
++++ b/litemall-core/src/main/java/org/linlinjava/litemall/core/config/WxConfig.java
+@@ -11,12 +11,12 @@ import org.springframework.beans.factory.annotation.Autowired;
+ import org.springframework.context.annotation.Bean;
+ import org.springframework.context.annotation.Configuration;
+ 
+-@Configuration
++//@Configuration
+ public class WxConfig {
+-    @Autowired
++//    @Autowired
+     private WxProperties properties;
+ 
+-    @Bean
++//    @Bean
+     public WxMaConfig wxMaConfig() {
+         WxMaInMemoryConfig config = new WxMaInMemoryConfig();
+         config.setAppid(properties.getAppId());
+@@ -25,14 +25,14 @@ public class WxConfig {
+     }
+ 
+ 
+-    @Bean
++//    @Bean
+     public WxMaService wxMaService(WxMaConfig maConfig) {
+         WxMaService service = new WxMaServiceImpl();
+         service.setWxMaConfig(maConfig);
+         return service;
+     }
+ 
+-    @Bean
++//    @Bean
+     public WxPayConfig wxPayConfig() {
+         WxPayConfig payConfig = new WxPayConfig();
+         payConfig.setAppId(properties.getAppId());
+@@ -46,7 +46,7 @@ public class WxConfig {
+     }
+ 
+ 
+-    @Bean
++//    @Bean
+     public WxPayService wxPayService(WxPayConfig payConfig) {
+         WxPayService wxPayService = new WxPayServiceImpl();
+         wxPayService.setConfig(payConfig);
+diff --git a/litemall-core/src/main/java/org/linlinjava/litemall/core/config/WxProperties.java b/litemall-core/src/main/java/org/linlinjava/litemall/core/config/WxProperties.java
+index f3b71322..609cdfb9 100644
+--- a/litemall-core/src/main/java/org/linlinjava/litemall/core/config/WxProperties.java
++++ b/litemall-core/src/main/java/org/linlinjava/litemall/core/config/WxProperties.java
+@@ -3,8 +3,8 @@ package org.linlinjava.litemall.core.config;
+ import org.springframework.boot.context.properties.ConfigurationProperties;
+ import org.springframework.context.annotation.Configuration;
+ 
+-@Configuration
+-@ConfigurationProperties(prefix = "litemall.wx")
++//@Configuration
++//@ConfigurationProperties(prefix = "litemall.wx")
+ public class WxProperties {
+ 
+     private String appId;
+diff --git a/litemall-core/src/main/java/org/linlinjava/litemall/core/config/datasource/MultiTenantConstants.java b/litemall-core/src/main/java/org/linlinjava/litemall/core/config/datasource/MultiTenantConstants.java
+index 789e22c5..198d34f1 100644
+--- a/litemall-core/src/main/java/org/linlinjava/litemall/core/config/datasource/MultiTenantConstants.java
++++ b/litemall-core/src/main/java/org/linlinjava/litemall/core/config/datasource/MultiTenantConstants.java
+@@ -4,4 +4,10 @@ public interface MultiTenantConstants {
+     String DEFAULT_TENANT_ID = "default";
+     String CURRENT_TENANT_IDENTIFIER = "CURRENT_TENANT_IDENTIFIER";
+     String TENANT_KEY = "tenant";
++
++    String TENANT_KEY1 = "tenant1";
++    String TENANT_KEY2 = "tenant2";
++    String TENANT_KEY3 = "tenant3";
++    String TENANT_KEY4 = "tenant4";
++    String TENANT_KEY5 = "tenant5";
+ }
+diff --git a/litemall-core/src/main/java/org/linlinjava/litemall/core/config/datasource/MultitenantConfiguration.java b/litemall-core/src/main/java/org/linlinjava/litemall/core/config/datasource/MultitenantConfiguration.java
+index d766878d..a82566c5 100644
+--- a/litemall-core/src/main/java/org/linlinjava/litemall/core/config/datasource/MultitenantConfiguration.java
++++ b/litemall-core/src/main/java/org/linlinjava/litemall/core/config/datasource/MultitenantConfiguration.java
+@@ -95,11 +95,11 @@ public class MultitenantConfiguration {
+ //                .url("jdbc:mysql://localhost:3306/litemall20201208?useUnicode=true&characterEncoding=UTF-8&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&verifyServerCertificate=false&useSSL=false")
+ //                .username("root")
+ //                .password("");
+-        resolvedDataSources.put("tenant1",tenant1DataSource);
+-        resolvedDataSources.put("tenant2",tenant2DataSource);
+-        resolvedDataSources.put("tenant3",tenant3DataSource);
+-        resolvedDataSources.put("tenant4",tenant4DataSource);
+-        resolvedDataSources.put("tenant5",tenant5DataSource);
++        resolvedDataSources.put(MultiTenantConstants.TENANT_KEY1,tenant1DataSource);
++        resolvedDataSources.put(MultiTenantConstants.TENANT_KEY2,tenant2DataSource);
++        resolvedDataSources.put(MultiTenantConstants.TENANT_KEY3,tenant3DataSource);
++        resolvedDataSources.put(MultiTenantConstants.TENANT_KEY4,tenant4DataSource);
++        resolvedDataSources.put(MultiTenantConstants.TENANT_KEY5,tenant5DataSource);
+ 
+         //db2
+ //        DataSourceBuilder dataSourceBuilder2 = DataSourceBuilder.create()
+diff --git a/litemall-core/src/main/java/org/linlinjava/litemall/core/qcode/QCodeService.java b/litemall-core/src/main/java/org/linlinjava/litemall/core/qcode/QCodeService.java
+index ead254c0..d0664302 100644
+--- a/litemall-core/src/main/java/org/linlinjava/litemall/core/qcode/QCodeService.java
++++ b/litemall-core/src/main/java/org/linlinjava/litemall/core/qcode/QCodeService.java
+@@ -4,6 +4,7 @@ import cn.binarywang.wx.miniapp.api.WxMaService;
+ import me.chanjar.weixin.common.error.WxErrorException;
+ import org.apache.commons.logging.Log;
+ import org.apache.commons.logging.LogFactory;
++import org.linlinjava.litemall.core.config.PeterWeiXinHelper;
+ import org.linlinjava.litemall.core.storage.StorageService;
+ import org.linlinjava.litemall.core.system.SystemConfig;
+ import org.linlinjava.litemall.db.domain.LitemallGroupon;
+@@ -21,8 +22,8 @@ import java.net.URL;
+ @Service
+ public class QCodeService {
+     private final Log logger = LogFactory.getLog(QCodeService.class);
+-    @Autowired
+-    WxMaService wxMaService;
++//    @Autowired
++//    WxMaService wxMaService;
+ 
+     @Autowired
+     private StorageService storageService;
+@@ -31,7 +32,7 @@ public class QCodeService {
+     public String createGrouponShareImage(String goodName, String goodPicUrl, LitemallGroupon groupon) {
+         try {
+             //创建该商品的二维码
+-            File file = wxMaService.getQrcodeService().createWxaCodeUnlimit("groupon," + groupon.getId(), "pages" +
++            File file = PeterWeiXinHelper.getWxMaService().getQrcodeService().createWxaCodeUnlimit("groupon," + groupon.getId(), "pages" +
+                     "/index/index");
+             FileInputStream inputStream = new FileInputStream(file);
+             //将商品图片，商品名字,商城名字画到模版图中
+@@ -67,7 +68,7 @@ public class QCodeService {
+ 
+         try {
+             //创建该商品的二维码
+-            File file = wxMaService.getQrcodeService().createWxaCodeUnlimit("goods," + goodId, "pages/index/index");
++            File file = PeterWeiXinHelper.getWxMaService().getQrcodeService().createWxaCodeUnlimit("goods," + goodId, "pages/index/index");
+             FileInputStream inputStream = new FileInputStream(file);
+             //将商品图片，商品名字,商城名字画到模版图中
+             byte[] imageData = drawPicture(inputStream, goodPicUrl, goodName);
+diff --git a/litemall-core/src/main/java/org/linlinjava/litemall/core/system/SystemInistService.java b/litemall-core/src/main/java/org/linlinjava/litemall/core/system/SystemInistService.java
+index 37accbef..3a8d6004 100644
+--- a/litemall-core/src/main/java/org/linlinjava/litemall/core/system/SystemInistService.java
++++ b/litemall-core/src/main/java/org/linlinjava/litemall/core/system/SystemInistService.java
+@@ -61,6 +61,7 @@ class SystemInistService {
+     private LitemallSystemConfigService litemallSystemConfigService;
+ 
+     private void initConfigs() {
++        //TODO , 并不支持多租户
+         // 1. 读取数据库全部配置信息
+         Map<String, String> configs = litemallSystemConfigService.queryAll();
+ 
+diff --git a/litemall-core/src/main/resources/application-core.yml b/litemall-core/src/main/resources/application-core.yml
+index ecdbf8d2..e79556f5 100644
+--- a/litemall-core/src/main/resources/application-core.yml
++++ b/litemall-core/src/main/resources/application-core.yml
+@@ -2,9 +2,12 @@ peter:
+   misc:
+     #该应用程序部署的URL
+     itselfUrl: http://localhost:8080
++    masterUserCreate: http://localhost:8080/admin/admin/create4master
++    masterUserUpdate: http://localhost:8080/admin/admin/create4master
++    masterUserDelete: http://localhost:8080/admin/admin/create4master
+ litemall:
+   # 开发者应该设置成自己的wx相关信息
+-  wx:
++  wx1:
+     app-id: wxa5b486c6b918ecfb
+     app-secret: e04004829d4c383b4db7769d88dfbca1
+     mch-id: 111111
+@@ -13,6 +16,15 @@ litemall:
+     # 商户证书文件路径
+     # 请参考“商户证书”一节 https://pay.weixin.qq.com/wiki/doc/api/wxa/wxa_api.php?chapter=4_3
+     key-path: xxxxx
++  wx2:
++    app-id: 2wxa5b486c6b918ecfb
++    app-secret: e04004829d4c383b4db7769d88dfbca1
++    mch-id: 2111111
++    mch-key: xxxxxx
++    notify-url: http://www.example.com/wx/order/pay-notify
++    # 商户证书文件路径
++    # 请参考“商户证书”一节 https://pay.weixin.qq.com/wiki/doc/api/wxa/wxa_api.php?chapter=4_3
++    key-path: xxxxx
+ 
+   #通知相关配置
+   notify:
+diff --git a/litemall-db/src/main/resources/application-db.yml b/litemall-db/src/main/resources/application-db.yml
+index 1798d6f8..06386d41 100644
+--- a/litemall-db/src/main/resources/application-db.yml
++++ b/litemall-db/src/main/resources/application-db.yml
+@@ -7,7 +7,7 @@ pagehelper:
+ spring:
+   datasource:
+     tenant1:
+-      url:  jdbc:mysql://localhost:3306/litemall20201208?useUnicode=true&characterEncoding=UTF-8&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&verifyServerCertificate=false&useSSL=false
++      url:  jdbc:mysql://localhost:3306/litemall_01?useUnicode=true&characterEncoding=UTF-8&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&verifyServerCertificate=false&useSSL=false
+       driver-class-name:  com.mysql.cj.jdbc.Driver
+       username:  root
+       password:
+@@ -30,7 +30,7 @@ spring:
+         stat:
+           enabled: false
+     tenant2:
+-      url:  jdbc:mysql://localhost:3306/litemall?useUnicode=true&characterEncoding=UTF-8&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&verifyServerCertificate=false&useSSL=false
++      url:  jdbc:mysql://localhost:3306/litemall_02?useUnicode=true&characterEncoding=UTF-8&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&verifyServerCertificate=false&useSSL=false
+       driver-class-name:  com.mysql.cj.jdbc.Driver
+       username:  root
+       password:
+diff --git a/litemall-wx-api/src/main/java/org/linlinjava/litemall/wx/service/WxOrderService.java b/litemall-wx-api/src/main/java/org/linlinjava/litemall/wx/service/WxOrderService.java
+index d83b51b8..7e75ff20 100644
+--- a/litemall-wx-api/src/main/java/org/linlinjava/litemall/wx/service/WxOrderService.java
++++ b/litemall-wx-api/src/main/java/org/linlinjava/litemall/wx/service/WxOrderService.java
+@@ -8,7 +8,6 @@ import com.github.binarywang.wxpay.bean.request.WxPayUnifiedOrderRequest;
+ import com.github.binarywang.wxpay.bean.result.BaseWxPayResult;
+ import com.github.binarywang.wxpay.constant.WxPayConstants;
+ import com.github.binarywang.wxpay.exception.WxPayException;
+-import com.github.binarywang.wxpay.service.WxPayService;
+ import org.apache.commons.io.IOUtils;
+ import org.apache.commons.logging.Log;
+ import org.apache.commons.logging.LogFactory;
+@@ -30,6 +29,7 @@ import org.linlinjava.litemall.db.util.OrderHandleOption;
+ import org.linlinjava.litemall.db.util.OrderUtil;
+ import org.linlinjava.litemall.core.util.IpUtil;
+ import org.linlinjava.litemall.wx.task.OrderUnpaidTask;
++import org.linlinjava.litemall.core.config.PeterWeiXinHelper;
+ import org.springframework.beans.factory.annotation.Autowired;
+ import org.springframework.stereotype.Service;
+ import org.springframework.transaction.annotation.Transactional;
+@@ -83,8 +83,8 @@ public class WxOrderService {
+     private LitemallRegionService regionService;
+     @Autowired
+     private LitemallGoodsProductService productService;
+-    @Autowired
+-    private WxPayService wxPayService;
++//    @Autowired
++//    private WxPayService wxPayService;
+     @Autowired
+     private NotifyService notifyService;
+     @Autowired
+@@ -598,7 +598,7 @@ public class WxOrderService {
+             orderRequest.setTotalFee(fee);
+             orderRequest.setSpbillCreateIp(IpUtil.getIpAddr(request));
+ 
+-            result = wxPayService.createOrder(orderRequest);
++            result = PeterWeiXinHelper.getWxPayService().createOrder(orderRequest);
+         } catch (Exception e) {
+             e.printStackTrace();
+             return ResponseUtil.fail(ORDER_PAY_FAIL, "订单不能支付");
+@@ -655,7 +655,7 @@ public class WxOrderService {
+             orderRequest.setTotalFee(fee);
+             orderRequest.setSpbillCreateIp(IpUtil.getIpAddr(request));
+ 
+-            result = wxPayService.createOrder(orderRequest);
++            result = PeterWeiXinHelper.getWxPayService().createOrder(orderRequest);
+ 
+         } catch (Exception e) {
+             e.printStackTrace();
+@@ -687,7 +687,7 @@ public class WxOrderService {
+ 
+         WxPayOrderNotifyResult result = null;
+         try {
+-            result = wxPayService.parseOrderNotifyResult(xmlResult);
++            result = PeterWeiXinHelper.getWxPayService().parseOrderNotifyResult(xmlResult);
+ 
+             if(!WxPayConstants.ResultCode.SUCCESS.equals(result.getResultCode())){
+                 logger.error(xmlResult);
+diff --git a/litemall-wx-api/src/main/java/org/linlinjava/litemall/wx/web/WxAuthController.java b/litemall-wx-api/src/main/java/org/linlinjava/litemall/wx/web/WxAuthController.java
+index 93a8a730..d2890585 100644
+--- a/litemall-wx-api/src/main/java/org/linlinjava/litemall/wx/web/WxAuthController.java
++++ b/litemall-wx-api/src/main/java/org/linlinjava/litemall/wx/web/WxAuthController.java
+@@ -1,6 +1,5 @@
+ package org.linlinjava.litemall.wx.web;
+ 
+-import cn.binarywang.wx.miniapp.api.WxMaService;
+ import cn.binarywang.wx.miniapp.bean.WxMaJscode2SessionResult;
+ import cn.binarywang.wx.miniapp.bean.WxMaPhoneNumberInfo;
+ import org.apache.commons.logging.Log;
+@@ -17,11 +16,11 @@ import org.linlinjava.litemall.db.service.CouponAssignService;
+ import org.linlinjava.litemall.db.service.LitemallUserService;
+ import org.linlinjava.litemall.wx.annotation.LoginUser;
+ import org.linlinjava.litemall.wx.dto.UserInfo;
+-import org.linlinjava.litemall.wx.dto.UserToken;
+ import org.linlinjava.litemall.wx.dto.WxLoginInfo;
+ import org.linlinjava.litemall.wx.service.CaptchaCodeManager;
+ import org.linlinjava.litemall.wx.service.UserTokenManager;
+ import org.linlinjava.litemall.core.util.IpUtil;
++import org.linlinjava.litemall.core.config.PeterWeiXinHelper;
+ import org.springframework.beans.factory.annotation.Autowired;
+ import org.springframework.util.StringUtils;
+ import org.springframework.validation.annotation.Validated;
+@@ -47,8 +46,8 @@ public class WxAuthController {
+     @Autowired
+     private LitemallUserService userService;
+ 
+-    @Autowired
+-    private WxMaService wxService;
++//    @Autowired
++//    private WxMaService wxService;
+ 
+     @Autowired
+     private NotifyService notifyService;
+@@ -125,7 +124,7 @@ public class WxAuthController {
+         String sessionKey = null;
+         String openId = null;
+         try {
+-            WxMaJscode2SessionResult result = this.wxService.getUserService().getSessionInfo(code);
++            WxMaJscode2SessionResult result = PeterWeiXinHelper.getWxMaService().getUserService().getSessionInfo(code);
+             sessionKey = result.getSessionKey();
+             openId = result.getOpenid();
+         } catch (Exception e) {
+@@ -270,7 +269,7 @@ public class WxAuthController {
+         // 继续验证openid
+         if(!StringUtils.isEmpty(wxCode)) {
+             try {
+-                WxMaJscode2SessionResult result = this.wxService.getUserService().getSessionInfo(wxCode);
++                WxMaJscode2SessionResult result = PeterWeiXinHelper.getWxMaService().getUserService().getSessionInfo(wxCode);
+                 openId = result.getOpenid();
+             } catch (Exception e) {
+                 e.printStackTrace();
+@@ -524,7 +523,7 @@ public class WxAuthController {
+     	LitemallUser user = userService.findById(userId);
+         String encryptedData = JacksonUtil.parseString(body, "encryptedData");
+         String iv = JacksonUtil.parseString(body, "iv");
+-        WxMaPhoneNumberInfo phoneNumberInfo = this.wxService.getUserService().getPhoneNoInfo(user.getSessionKey(), encryptedData, iv);
++        WxMaPhoneNumberInfo phoneNumberInfo = PeterWeiXinHelper.getWxMaService().getUserService().getPhoneNoInfo(user.getSessionKey(), encryptedData, iv);
+         String phone = phoneNumberInfo.getPhoneNumber();
+         user.setMobile(phone);
+         if (userService.updateById(user) == 0) {
+diff --git a/study.txt b/study.txt
+index 95fdee08..7b4b129b 100644
+--- a/study.txt
++++ b/study.txt
+@@ -17,6 +17,9 @@ a。主库只存放用户
+ b。 
+ 需要排除 exclude = DataSourceAutoConfiguration.class
+ @SpringBootApplication(scanBasePackages = {"org.linlinjava.litemall"}, exclude = DataSourceAutoConfiguration.class)
++c. 数据源的配置在 litemall-db的application-db.yml中，目前预定了5个 tenant1 -- tenant5
++
++d. 对于新的租户，需要想主库里的用户名手动增加。 分库里增加用户，需要体现在主库里。
+ 
+ ----litemall_admin表有发生变化，变化的语句是：
+ 待拷贝
+-- 
+2.20.1.windows.1
+
